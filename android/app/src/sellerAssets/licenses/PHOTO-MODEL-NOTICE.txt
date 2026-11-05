@@ -1,0 +1,18 @@
+ManchApp seller photo editor
+
+Image processing library: OpenCV Android 4.12.0, distributed from the official Maven artifact org.opencv:opencv.
+Source and license: https://github.com/opencv/opencv/tree/4.12.0
+
+Segmentation architecture and pretrained source: U2NetP / U^2-Net by Xuebin Qin and contributors.
+Original project: https://github.com/xuebinqin/U-2-Net
+Original license: Apache License 2.0 (included as U2Net-APACHE-2.0.txt).
+
+ONNX conversion distribution: rembg by Daniel Gatis and contributors.
+Source: https://github.com/danielgatis/rembg/blob/main/rembg/sessions/u2netp.py
+Model URL: https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx
+Converter license: MIT (included as rembg-MIT.txt).
+Verified MD5 from distributor: 8e83ca70e441ab06c318d82300c84806
+Packaged model SHA-256: 309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8
+
+The model is bundled only in the seller application and runs locally on CPU.
+No learned food colour LUT is included. Natural colour correction uses conventional OpenCV processing.

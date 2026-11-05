@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <instrumentation android:name="pe.manchapp.beta.SellerChecks" android:targetPackage="pe.manchapp.beta" android:label="Local prototype queue checks" />
+  <instrumentation android:name="pe.manchapp.beta.PhotoChecks" android:targetPackage="pe.manchapp.beta" android:label="Photo processing checks" />
+  <instrumentation android:name="pe.manchapp.beta.EditorUiChecks" android:targetPackage="pe.manchapp.beta" android:label="Editor workflow checks" />
+  <instrumentation android:name="pe.manchapp.beta.PhotoCropChecks" android:targetPackage="pe.manchapp.beta" android:label="Crop and transparency checks" />
+</manifest>

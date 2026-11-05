@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Ollas Manchay</title>
+  <rect width="128" height="128" rx="28" fill="#F2994A"/>
+  <circle cx="64" cy="67" r="38" fill="#FFFFFF"/>
+  <path d="M34 63h60v10c0 16-13 29-30 29S34 89 34 73V63Z" fill="#27AE60"/>
+  <path d="M41 52c5-10 14-16 23-16s18 6 23 16" fill="none" stroke="#111827" stroke-width="8" stroke-linecap="round"/>
+  <path d="M47 73h34" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+</svg>

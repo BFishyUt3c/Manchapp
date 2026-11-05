@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'pe.manchapp.beta'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'pe.manchapp.beta'
+        minSdk 24
+        targetSdk 28
+        versionCode 10
+        versionName '0.6.2'
+    }
+
+    sourceSets { main { assets.srcDirs += ['src/sellerAssets'] } }
+
+    // Each device receives only its native library; the model stays local in every seller APK.
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+            universalApk false
+        }
+    }
+    packaging { jniLibs { useLegacyPackaging = true } }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    def demoKey = rootProject.file('.tools/android/demo-key.p12')
+    if (demoKey.exists()) {
+        signingConfigs {
+            demo {
+                storeFile demoKey
+                storePassword 'android'
+                keyAlias 'manchapp'
+                keyPassword 'android'
+            }
+        }
+        buildTypes {
+            debug {
+                signingConfig signingConfigs.demo
+            }
+        }
+    }
+}
+
+dependencies { implementation 'org.opencv:opencv:4.12.0' }

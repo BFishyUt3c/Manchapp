@@ -1,0 +1,33 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'pe.manchapp.pedidos'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'pe.manchapp.pedidos'
+        minSdk 24
+        targetSdk 28
+        versionCode 6
+        versionName '0.6.2'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    // Both APKs reuse the small native view kit, fonts and example catalog.
+    // Activities and persistent data are separate for each application.
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java', '../app/src/main/java']
+            java.includes = ['**/CustomerActivity.java', '**/CustomerStore.java', '**/DeliveryLocator.java', '**/NativeUi.java', '**/DishArt.java', '**/ImageTools.java', '**/SaleRules.java', '**/SaleSchedule.java', '**/DeliveryDestination.java']
+            assets.srcDirs = ['../app/src/main/assets']
+        }
+    }
+    def demoKey = rootProject.file('.tools/android/demo-key.p12')
+    if (demoKey.exists()) {
+        signingConfigs {
+            demo { storeFile demoKey; storePassword 'android'; keyAlias 'manchapp'; keyPassword 'android' }
+        }
+        buildTypes { debug { signingConfig signingConfigs.demo } }
+    }
+}

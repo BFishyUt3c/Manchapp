@@ -1,0 +1,18 @@
+{
+  "name": "Ollas Manchay",
+  "short_name": "Ollas",
+  "description": "Asistente simple para catálogos, promociones, fotos y pagos de las ollas comunes de Manchay.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F9F9F9",
+  "theme_color": "#F2994A",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
