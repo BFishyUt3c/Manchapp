@@ -13,7 +13,7 @@ import java.util.*;
 /** Seller-only OpenCV processing and local U2NetP inference. Single worker owns this session. */
 final class FoodPhotoEngine implements AutoCloseable {
     private final Context context;
-    private Mat original,enhanced,mask,plainMask,completeMask,smallMask,sourceAlpha;
+    private Mat original,enhanced,mask,plainMask,completeMask,smallMask,sourceAlpha,manualMask;
     private boolean includeObjects=false;
     private Net network;
     long maskMillis=0;
@@ -41,10 +41,15 @@ final class FoodPhotoEngine implements AutoCloseable {
         }catch(RuntimeException error){sharp.release();throw error;}finally{release(channels);balanced.release();lab.release();hsv.release();blur.release();}
     }
     private static void release(List<Mat> all){for(Mat mat:all)mat.release();all.clear();}
-    Bitmap render(boolean improve,String background)throws IOException{
-        if(original==null)throw new IOException("Vuelve a abrir la foto.");Mat source=improve?enhanced:original;
+    Bitmap render(boolean improve,String background)throws IOException{return render(improve?1f:0f,background);}
+    Bitmap render(float strength,String background)throws IOException{
+        if(original==null)throw new IOException("Vuelve a abrir la foto.");float amount=Float.isNaN(strength)?0:Math.max(0,Math.min(1,strength));
+        if(amount==0)return renderSource(original,background);if(amount==1)return renderSource(enhanced,background);
+        Mat blended=new Mat();try{Core.addWeighted(original,1-amount,enhanced,amount,0,blended);return renderSource(blended,background);}finally{blended.release();}
+    }
+    private Bitmap renderSource(Mat source,String background)throws IOException{
         if(background.equals("original"))return sourceAlpha==null?bitmap(source):isolated(source,sourceAlpha,false);
-        ensureMask();if(background.equals("transparent"))return isolated(source,mask,sourceAlpha==null);
+        ensureMask();if(background.equals("transparent"))return isolated(source,mask,sourceAlpha==null&&manualMask==null);
         Mat back=new Mat();Bitmap texture=null;
         try{
             if(background.equals("blur"))Imgproc.GaussianBlur(source,back,new Size(0,0),Math.max(5,source.cols()/60.0));
@@ -52,8 +57,10 @@ final class FoodPhotoEngine implements AutoCloseable {
             return composite(source,back,mask);
         }finally{if(texture!=null)texture.recycle();back.release();}
     }
-    void includeObjects(boolean value){includeObjects=value;mask=sourceAlpha!=null?sourceAlpha:value?completeMask:plainMask;}
+    void setManualMask(Bitmap bitmap)throws IOException{if(bitmap.getWidth()!=original.cols()||bitmap.getHeight()!=original.rows())throw new IOException("Este recorte no coincide con la foto.");Mat rgba=new Mat(),alpha=new Mat(),next=new Mat();try{Utils.bitmapToMat(bitmap,rgba,true);Core.extractChannel(rgba,alpha,3);alpha.convertTo(next,CvType.CV_32F,1/255.0);if(manualMask!=null)manualMask.release();manualMask=next;next=null;mask=manualMask;}finally{rgba.release();alpha.release();if(next!=null)next.release();}}
+    void includeObjects(boolean value){includeObjects=value;mask=manualMask!=null?manualMask:sourceAlpha!=null?sourceAlpha:value?completeMask:plainMask;}
     private void ensureMask()throws IOException{
+        if(manualMask!=null){mask=manualMask;return;}
         if(sourceAlpha!=null){mask=sourceAlpha;return;}
         if(mask!=null)return;
         if(smallMask!=null){Mat rgb=new Mat(),soft=smallMask.clone();try{Imgproc.resize(original,rgb,new Size(320,320));if(includeObjects)completeObjects(rgb,soft);mask=finishMask(soft);if(includeObjects)completeMask=mask;else plainMask=mask;}finally{rgb.release();soft.release();}return;}long start=android.os.SystemClock.elapsedRealtime();Mat small=new Mat(),floats=new Mat(),blob=null,prediction=null,flat=null,soft=new Mat(),candidate=new Mat();List<Mat> channels=new ArrayList<>();
@@ -68,7 +75,10 @@ final class FoodPhotoEngine implements AutoCloseable {
             candidate=finishMask(soft);mask=candidate;if(includeObjects)completeMask=mask;else plainMask=mask;candidate=null;maskMillis=android.os.SystemClock.elapsedRealtime()-start;maskRuns++;
         }catch(IOException error){throw error;}catch(RuntimeException error){throw new IOException("No pudimos separar el fondo de esta foto. Puedes usar la mejora natural.",error);}finally{small.release();floats.release();release(channels);if(blob!=null)blob.release();if(flat!=null)flat.release();if(prediction!=null)prediction.release();soft.release();if(candidate!=null)candidate.release();}
     }
-    private Mat finishMask(Mat source)throws IOException{Mat soft=source.clone(),candidate=new Mat(),kernel=Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE,new Size(3,3));try{Imgproc.dilate(soft,soft,kernel);Imgproc.resize(soft,candidate,original.size(),0,0,Imgproc.INTER_LINEAR);Imgproc.GaussianBlur(candidate,candidate,new Size(0,0),1.1);Core.min(candidate,new Scalar(1),candidate);Core.max(candidate,new Scalar(0),candidate);double coverage=Core.mean(candidate).val[0];if(coverage<.01||coverage>.985){candidate.release();throw new IOException("El recorte no quedó claro. Prueba desactivar incluir plato, o conserva el fondo original.");}return candidate;}finally{soft.release();kernel.release();}}
+    private Mat finishMask(Mat source)throws IOException{Mat soft=source.clone(),candidate=new Mat(),kernel=Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE,new Size(3,3)),binary=new Mat(),labels=new Mat(),stats=new Mat(),centroids=new Mat(),keep=new Mat(),component=new Mat();try{
+        Core.compare(soft,new Scalar(.35),binary,Core.CMP_GT);int count=Imgproc.connectedComponentsWithStats(binary,labels,stats,centroids,8,CvType.CV_32S);
+        if(count>1){int largest=0;for(int i=1;i<count;i++)largest=Math.max(largest,(int)stats.get(i,Imgproc.CC_STAT_AREA)[0]);int minimum=Math.max(24,Math.round(largest*.005f));for(int i=1;i<count;i++){if((int)stats.get(i,Imgproc.CC_STAT_AREA)[0]<minimum)continue;Core.compare(labels,new Scalar(i),component,Core.CMP_EQ);Core.bitwise_or(keep,component,keep);}keep.convertTo(keep,CvType.CV_32F,1/255.0);Core.multiply(soft,keep,soft);}
+        Imgproc.dilate(soft,soft,kernel);Imgproc.resize(soft,candidate,original.size(),0,0,Imgproc.INTER_LINEAR);Imgproc.GaussianBlur(candidate,candidate,new Size(0,0),1.1);Core.min(candidate,new Scalar(1),candidate);Core.max(candidate,new Scalar(0),candidate);double coverage=Core.mean(candidate).val[0];if(coverage<.01||coverage>.985){candidate.release();throw new IOException("El recorte no quedó claro. Prueba desactivar incluir plato, o conserva el fondo original.");}return candidate;}finally{soft.release();kernel.release();binary.release();labels.release();stats.release();centroids.release();keep.release();component.release();}}
     /** U2NetP saliency may ignore a second cup. Colour refinement keeps the complete still life. */
     private static void completeObjects(Mat rgb,Mat soft){
         Mat labels=new Mat(rgb.size(),CvType.CV_8U,new Scalar(Imgproc.GC_PR_BGD)),background=new Mat(),foreground=new Mat(),sure=new Mat(),keep=new Mat(),other=new Mat(),refined=new Mat();
@@ -82,7 +92,7 @@ final class FoodPhotoEngine implements AutoCloseable {
     }
     private File modelFile()throws IOException{
         String expected="309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8";File model=new File(context.getFilesDir(),"u2netp-"+expected.substring(0,12)+".onnx");if(model.isFile())return model;
-        android.util.AtomicFile atomic=new android.util.AtomicFile(model);FileOutputStream output=null;
+        android.util.AtomicFile atomic=new CrossFile(model);FileOutputStream output=null;
         try(InputStream in=context.getAssets().open("models/u2netp.onnx")){MessageDigest hash=MessageDigest.getInstance("SHA-256");output=atomic.startWrite();byte[] buffer=new byte[16384];int count;while((count=in.read(buffer))!=-1){output.write(buffer,0,count);hash.update(buffer,0,count);}StringBuilder actual=new StringBuilder();for(byte b:hash.digest())actual.append(String.format(Locale.US,"%02x",b&255));if(!actual.toString().equals(expected))throw new IOException("El archivo del recorte no está completo.");atomic.finishWrite(output);output=null;return model;}catch(Exception error){if(output!=null)atomic.failWrite(output);if(error instanceof IOException)throw (IOException)error;throw new IOException("No pudimos preparar el recorte.",error);}
     }
     private static Bitmap bitmap(Mat rgb){Bitmap result=Bitmap.createBitmap(rgb.cols(),rgb.rows(),Bitmap.Config.ARGB_8888);Utils.matToBitmap(rgb,result);return result;}
@@ -106,7 +116,7 @@ final class FoodPhotoEngine implements AutoCloseable {
         int width=foreground.cols(),height=foreground.rows();Bitmap result=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);byte[] front=new byte[width*3],back=new byte[width*3];float[] alpha=new float[width];int[] row=new int[width];
         for(int y=0;y<height;y++){foreground.get(y,0,front);background.get(y,0,back);mask.get(y,0,alpha);for(int x=0;x<width;x++){float a=Math.max(0,Math.min(1,alpha[x]));int at=x*3;int r=Math.round((front[at]&255)*a+(back[at]&255)*(1-a)),g=Math.round((front[at+1]&255)*a+(back[at+1]&255)*(1-a)),b=Math.round((front[at+2]&255)*a+(back[at+2]&255)*(1-a));row[x]=Color.rgb(r,g,b);}result.setPixels(row,0,width,0,y,width,1);}return result;
     }
-    private static Bitmap texture(int width,int height,String kind){
+    static Bitmap texture(int width,int height,String kind){
         Bitmap result=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);int[] row=new int[width];
         for(int y=0;y<height;y++){for(int x=0;x<width;x++){double light=1-.10*Math.pow((x-width*.42)/Math.max(1,width),2)-.08*y/Math.max(1.0,height);int r,g,b;
             if(kind.equals("wood")){double grain=7*Math.sin(y*.16+Math.sin(x*.009)*1.8)+3*Math.sin(y*.83+x*.012);double plank=y%Math.max(1,height/4)<2?-22:0;r=(int)((177+grain+plank)*light);g=(int)((126+grain+plank)*light);b=(int)((78+grain+plank)*light);}
@@ -115,5 +125,5 @@ final class FoodPhotoEngine implements AutoCloseable {
             row[x]=Color.rgb(Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b)));}result.setPixels(row,0,width,0,y,width,1);}return result;
     }
     Bitmap maskPreview()throws IOException{ensureMask();Mat view=new Mat();try{mask.convertTo(view,CvType.CV_8U,255);return bitmap(view);}finally{view.release();}}
-    @Override public void close(){if(original!=null)original.release();if(enhanced!=null)enhanced.release();if(plainMask!=null)plainMask.release();if(completeMask!=null)completeMask.release();if(smallMask!=null)smallMask.release();if(sourceAlpha!=null)sourceAlpha.release();original=null;enhanced=null;mask=null;plainMask=null;completeMask=null;smallMask=null;sourceAlpha=null;network=null;}
+    @Override public void close(){if(original!=null)original.release();if(enhanced!=null)enhanced.release();if(plainMask!=null)plainMask.release();if(completeMask!=null)completeMask.release();if(smallMask!=null)smallMask.release();if(sourceAlpha!=null)sourceAlpha.release();if(manualMask!=null)manualMask.release();manualMask=null;original=null;enhanced=null;mask=null;plainMask=null;completeMask=null;smallMask=null;sourceAlpha=null;network=null;}
 }

@@ -10,8 +10,8 @@ android {
         applicationId 'pe.manchapp.beta'
         minSdk 24
         targetSdk 28
-        versionCode 10
-        versionName '0.6.2'
+        versionCode 16
+        versionName '0.8.0'
     }
 
     sourceSets { main { assets.srcDirs += ['src/sellerAssets'] } }
@@ -26,6 +26,7 @@ android {
         }
     }
     packaging { jniLibs { useLegacyPackaging = true } }
+    testOptions { unitTests.includeAndroidResources = true; unitTests.all { maxHeapSize = '1024m'; systemProperty 'manchapp.root', rootProject.projectDir.absolutePath; systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2' } }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -50,4 +51,8 @@ android {
     }
 }
 
-dependencies { implementation 'org.opencv:opencv:4.12.0' }
+dependencies {
+    implementation 'org.opencv:opencv:4.12.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.17'
+}

@@ -10,10 +10,11 @@
     "preview": "vite preview",
     "start": "node server/server.mjs",
     "demo": "npm run build && node server/server.mjs",
-    "test": "node --test server/server.test.mjs",
+    "test": "node --test server/server.test.mjs server/integration.test.mjs",
     "assets": "node scripts/create-illustrations.mjs",
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-android.ps1",
-    "android:pair": "node scripts/pair-android.mjs"
+    "android:pair": "node scripts/pair-android.mjs",
+    "servidor": "node scripts/local-server.mjs"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",

@@ -56,7 +56,7 @@ public final class EditorUiChecks extends Instrumentation {
             check(((Bitmap)field(editor,"result").get(editor)).getWidth()==width,"Undo restores full width");
             onMain(()->invoke(active,"openCrop"));Dialog third=cropDialog(active);
             onMain(()->{cropFrame(third).zoom(true);third.getWindow().getDecorView().findViewWithTag("crop:apply").performClick();});waitEditor(editor);
-            onMain(()->active.getWindow().getDecorView().findViewWithTag("marble").performClick());waitEditor(editor);
+            onMain(()->{active.getWindow().getDecorView().findViewWithTag("tool:background").performClick();active.getWindow().getDecorView().findViewWithTag("blur").performClick();});waitEditor(editor);
             onMain(()->active.getWindow().getDecorView().findViewWithTag("transparent").performClick());waitEditor(editor);
             Bitmap cutout=(Bitmap)field(editor,"result").get(editor);check(ImageTools.hasTransparency(cutout),"Transparent UI produces alpha");
             FoodPhotoEngine engine=(FoodPhotoEngine)field(editor,"engine").get(editor);check(engine.maskRuns==1,"Background switches reuse inference after cropping");

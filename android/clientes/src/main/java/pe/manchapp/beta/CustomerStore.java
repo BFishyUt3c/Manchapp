@@ -1,52 +1,62 @@
 package pe.manchapp.beta;
 
 import android.content.Context;
-import android.util.AtomicFile;
 import org.json.*;
 import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.util.UUID;
+import java.util.*;
 
 final class CustomerStore {
-    private final AtomicFile file;
+    private static final Map<String,CustomerStore> instances=new HashMap<>();
+    static synchronized CustomerStore open(Context context){String key=context.getFilesDir().getAbsolutePath();CustomerStore value=instances.get(key);if(value==null){value=new CustomerStore(context.getApplicationContext());instances.put(key,value);}return value;}
+    private final SafeJson file;
     private JSONObject state;
-
     CustomerStore(Context context){this(context,"customer-prototype.json");}
     CustomerStore(Context context,String filename){
-        file=new AtomicFile(new File(context.getFilesDir(),filename));
-        try{state=new JSONObject(read(file.openRead()));}
-        catch(Exception missing){try{
-            JSONObject seed=new JSONObject(read(context.getAssets().open("seed.json")));
-            state=new JSONObject().put("catalog",seed).put("cart",new JSONObject()).put("details",new JSONObject()).put("orders",new JSONArray());save();
-        }catch(Exception fatal){throw new IllegalStateException("No pudimos preparar el catálogo de ejemplo.",fatal);}}
-        upgrade(context);
+        file=new SafeJson(new File(context.getFilesDir(),filename),"catalog");
+        try{
+            JSONObject seed=new JSONObject(SafeJson.read(context.getAssets().open("seed.json")));
+            state=file.load(new JSONObject().put("schema",2).put("catalog",seed).put("cart",new JSONObject()).put("details",new JSONObject()).put("orders",new JSONArray()));
+            if(state.optInt("schema")<2){JSONArray orders=state.optJSONArray("orders");for(int i=0;orders!=null&&i<orders.length();i++)orders.getJSONObject(i).put("sendState","legacy");state.put("schema",2);save();}
+            if(SaleSchedule.upgrade(state.getJSONObject("catalog"),seed.getJSONObject("settings")))save();
+        }catch(Exception error){throw new IllegalStateException(error.getMessage(),error);}
     }
-    private void upgrade(Context context){try{JSONObject defaults=new JSONObject(read(context.getAssets().open("seed.json"))).getJSONObject("settings");if(SaleSchedule.upgrade(state.getJSONObject("catalog"),defaults))save();}catch(Exception error){throw new IllegalStateException("No pudimos actualizar las fechas de venta.",error);}}
-    private static String read(InputStream stream)throws IOException{try(InputStream in=stream;ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] bytes=new byte[8192];int count;while((count=in.read(bytes))!=-1)out.write(bytes,0,count);return new String(out.toByteArray(),StandardCharsets.UTF_8);}}
     static JSONObject copy(JSONObject value){try{return new JSONObject(value.toString());}catch(JSONException error){throw new IllegalStateException(error);}}
     synchronized JSONObject snapshot(){return copy(state);}
-    private void save()throws IOException{FileOutputStream out=null;try{out=file.startWrite();out.write(state.toString().getBytes(StandardCharsets.UTF_8));file.finishWrite(out);}catch(IOException error){if(out!=null)file.failWrite(out);throw error;}}
+    private void save()throws IOException{file.save(state);}
+    synchronized String serverUrl(){return state.optString("serverUrl");}
+    synchronized String storeId(){return state.optJSONObject("catalog").optString("storeId");}
     private JSONObject find(String id){JSONArray products=state.optJSONObject("catalog").optJSONArray("products");for(int i=0;i<products.length();i++)if(products.optJSONObject(i).optString("id").equals(id))return products.optJSONObject(i);return null;}
+    private JSONObject schedule(JSONObject product){return SaleSchedule.forProduct(product,state.optJSONObject("catalog").optJSONObject("settings"));}
+    private JSONObject cartSchedule(){JSONObject cart=state.optJSONObject("cart");Iterator<String> ids=cart.keys();while(ids.hasNext()){JSONObject product=find(ids.next());if(product!=null)return schedule(product);}return state.optJSONObject("catalog").optJSONObject("settings");}
+    synchronized JSONObject currentSale(){return copy(cartSchedule());}
     synchronized void quantity(String id,int amount)throws Exception{
-        JSONObject product=find(id);if(product==null||!product.optString("line").equals("commercial"))throw new Exception("Este producto no pertenece a la venta comercial.");
-        if(amount<0||amount>10000||amount>product.optInt("stock")||(amount>0&&!product.optBoolean("available")))throw new Exception("Revisa la cantidad disponible.");
-        JSONObject settings=state.getJSONObject("catalog").getJSONObject("settings");if(amount>state.getJSONObject("cart").optInt(id))SaleSchedule.requireOpen(settings,System.currentTimeMillis());
-        if(amount>0&&count()>0&&!state.optString("cartSale",SaleSchedule.key(settings)).equals(SaleSchedule.key(settings)))throw new Exception("La fecha de venta cambió. Vacía el carrito para reservar en la nueva fecha.");
+        JSONObject product=find(id);if(product==null||!product.optString("line").equals("commercial"))throw new Exception("Este producto no pertenece al catálogo de ventas.");
+        if(amount<0||amount>99||amount>product.optInt("stock")||(amount>0&&!product.optBoolean("available")))throw new Exception("Revisa la cantidad disponible; máximo 99 por producto.");
+        JSONObject settings=schedule(product);if(amount>state.getJSONObject("cart").optInt(id))SaleSchedule.requireOpen(settings,System.currentTimeMillis());
+        if(amount>0&&count()>0&&!SaleSchedule.key(cartSchedule()).equals(SaleSchedule.key(settings)))throw new Exception("Este producto se vende en otra fecha. Termina este pedido y luego crea uno nuevo.");
+        if(amount>0&&cartNeedsReview())throw new Exception("La jornada cambió. Revisa el carrito antes de agregar productos.");
         JSONObject before=copy(state);try{if(count()==0)state.put("cartSale",SaleSchedule.key(settings));if(amount==0)state.getJSONObject("cart").remove(id);else state.getJSONObject("cart").put(id,amount);save();}catch(Exception error){state=before;throw error;}
     }
-    JSONObject bundledSale(Context context)throws Exception{return new JSONObject(read(context.getAssets().open("seed.json"))).getJSONObject("settings");}
-    synchronized boolean cartNeedsReview(){return count()>0&&!state.optString("cartSale",SaleSchedule.key(state.optJSONObject("catalog").optJSONObject("settings"))).equals(SaleSchedule.key(state.optJSONObject("catalog").optJSONObject("settings")));}
+    JSONObject bundledSale(Context context)throws Exception{return new JSONObject(SafeJson.read(context.getAssets().open("seed.json"))).getJSONObject("settings");}
+    synchronized boolean cartNeedsReview(){return count()>0&&!state.optString("cartSale",SaleSchedule.key(cartSchedule())).equals(SaleSchedule.key(cartSchedule()));}
     synchronized void loadBundledCatalog(Context context)throws Exception{
-        JSONObject catalog=new JSONObject(read(context.getAssets().open("seed.json"))),before=copy(state);String day=catalog.getJSONObject("settings").getString("saleDate");
-        try{if(count()>0&&!state.has("cartSale"))state.put("cartSale",SaleSchedule.key(state.getJSONObject("catalog").getJSONObject("settings")));
-            JSONArray products=catalog.getJSONArray("products"),orders=state.getJSONArray("orders");for(int i=0;i<products.length();i++){JSONObject product=products.getJSONObject(i);int reserved=0;for(int j=0;j<orders.length();j++){JSONObject order=orders.getJSONObject(j);if(!order.optString("saleDate").equals(day)||order.optString("status").equals("cancelled"))continue;JSONArray items=order.optJSONArray("items");for(int k=0;items!=null&&k<items.length();k++)if(items.getJSONObject(k).optString("productId").equals(product.optString("id")))reserved+=items.getJSONObject(k).optInt("quantity");}product.put("stock",Math.max(0,product.optInt("stock")-reserved));}
-            state.put("catalog",catalog);save();
-        }catch(Exception error){state=before;throw error;}
+        if(!serverUrl().isEmpty())throw new Exception("Este catálogo está vinculado. Actualízalo desde la laptop.");
+        JSONObject before=copy(state);try{state.put("catalog",new JSONObject(SafeJson.read(context.getAssets().open("seed.json"))));save();}catch(Exception error){state=before;throw error;}
+    }
+    synchronized void acceptCatalog(JSONObject remote,String endpoint)throws Exception{
+        if(remote.optJSONObject("settings")==null||remote.optJSONArray("products")==null||remote.optString("storeId").isEmpty())throw new IOException("La dirección no corresponde al servidor actualizado de ManchApp.");
+        if(!storeId().isEmpty()&&!storeId().equals(remote.optString("storeId")))throw new IOException("Esta laptop contiene otro catálogo. Conservamos tus pedidos y carrito.");
+        if(!storeId().isEmpty()&&remote.optInt("revision")<state.getJSONObject("catalog").optInt("revision"))return;
+        JSONObject before=copy(state);
+        try{if(count()>0&&!state.has("cartSale"))state.put("cartSale",SaleSchedule.key(state.getJSONObject("catalog").getJSONObject("settings")));state.put("catalog",copy(remote)).put("serverUrl",HttpApi.endpoint(endpoint));save();}catch(Exception error){state=before;throw error;}
+    }
+    synchronized void acceptDeviceCatalog(JSONObject remote)throws Exception{
+        if(remote.optJSONObject("settings")==null||remote.optJSONArray("products")==null)throw new IOException("ManchApp Emprendedora todavía no tiene un catálogo disponible.");JSONObject before=copy(state);try{if(count()>0&&!state.has("cartSale"))state.put("cartSale",SaleSchedule.key(cartSchedule()));state.put("catalog",copy(remote)).remove("serverUrl");save();}catch(Exception error){state=before;throw error;}
     }
     synchronized void clearCart()throws Exception{JSONObject before=copy(state);try{state.put("cart",new JSONObject()).remove("cartSale");save();}catch(Exception error){state=before;throw error;}}
-    synchronized void details(JSONObject details)throws Exception{if(state.optJSONObject("details").toString().equals(details.toString()))return;JSONObject before=copy(state);try{state.put("details",copy(details));save();}catch(Exception error){state=before;throw error;}}
-    synchronized double subtotal(){JSONObject cart=state.optJSONObject("cart");double sum=0;java.util.Iterator<String> ids=cart.keys();while(ids.hasNext()){String id=ids.next();JSONObject p=find(id);if(p!=null)sum+=p.optDouble("price")*cart.optInt(id);}return SaleRules.money(sum);}
-    synchronized int count(){JSONObject cart=state.optJSONObject("cart");int count=0;java.util.Iterator<String> ids=cart.keys();while(ids.hasNext())count+=cart.optInt(ids.next());return count;}
+    synchronized void details(JSONObject value)throws Exception{if(state.optJSONObject("details").toString().equals(value.toString()))return;JSONObject before=copy(state);try{state.put("details",copy(value));save();}catch(Exception error){state=before;throw error;}}
+    synchronized double subtotal(){JSONObject cart=state.optJSONObject("cart");double sum=0;Iterator<String> ids=cart.keys();while(ids.hasNext()){String id=ids.next();JSONObject product=find(id);if(product!=null)sum+=product.optDouble("price")*cart.optInt(id);}return SaleRules.money(sum);}
+    synchronized int count(){JSONObject cart=state.optJSONObject("cart");int count=0;Iterator<String> ids=cart.keys();while(ids.hasNext())count+=cart.optInt(ids.next());return count;}
     synchronized double fee(JSONObject details)throws Exception{
         if(!details.optString("fulfillment","pickup").equals("delivery"))return 0;
         JSONObject settings=state.optJSONObject("catalog").optJSONObject("settings");JSONArray zones=settings.optJSONArray("zones");
@@ -54,26 +64,33 @@ final class CustomerStore {
         throw new Exception("Elige un sector habilitado para el reparto.");
     }
     synchronized JSONObject placePracticeOrder(JSONObject details)throws Exception{return placePracticeOrder(details,System.currentTimeMillis());}
+    synchronized JSONObject placeReviewedOrder(JSONObject details,int revision)throws Exception{if(revision!=state.getJSONObject("catalog").optInt("revision"))throw new Exception("El catálogo cambió. Revisa otra vez el total y la fecha antes de enviar.");return placePracticeOrder(details);}
     synchronized JSONObject placePracticeOrder(JSONObject details,long now)throws Exception{
-        details=DeliveryDestination.normalized(details);
-        if(count()==0)throw new Exception("Agrega un producto antes de guardar tu reserva.");
-        JSONObject settings=state.getJSONObject("catalog").getJSONObject("settings");SaleSchedule.requireOpen(settings,now);
-        if(!state.optString("cartSale",SaleSchedule.key(settings)).equals(SaleSchedule.key(settings)))throw new Exception("La fecha de venta cambió. Vacía el carrito y revisa la nueva fecha.");
-        if(details.optString("customer").trim().length()<2)throw new Exception("Escribe tu nombre.");
-        if(!SaleRules.validPhone(details.optString("phone")))throw new Exception("El celular debe tener 9 dígitos y empezar con 9.");
-        String mode=details.optString("fulfillment","pickup"),payment=details.optString("payment","cash");
-        if(!mode.equals("pickup")&&!mode.equals("delivery"))throw new Exception("Elige recojo o reparto.");
-        if(!java.util.Arrays.asList("cash","yape","plin").contains(payment))throw new Exception("Elige una forma de pago.");
-        if(mode.equals("delivery")&&(details.optString("address").trim().length()<4||details.optString("reference").trim().length()<3))throw new Exception("Completa el punto de encuentro y una referencia.");
-        if(mode.equals("delivery")){String destinationProblem=DeliveryDestination.problem(details,settings.optString("saleDate"));if(!destinationProblem.isEmpty())throw new Exception(destinationProblem);}
-        double subtotal=subtotal(),fee=fee(details);JSONObject before=copy(state);
+        if(cartNeedsReview())throw new Exception("La jornada cambió. Vacía el carrito y revisa la nueva fecha.");
+        JSONObject order=OrderDraft.build(state.getJSONObject("catalog"),details,state.getJSONObject("cart"),false,now),before=copy(state);
         try{
-            JSONArray items=new JSONArray();JSONObject cart=state.getJSONObject("cart");java.util.Iterator<String> ids=cart.keys();
-            while(ids.hasNext()){String id=ids.next();JSONObject p=find(id);int amount=cart.optInt(id);if(p==null||!p.optString("line").equals("commercial")||!p.optBoolean("available")||amount<=0||amount>p.optInt("stock"))throw new Exception("Cambió la disponibilidad. Revisa tu carrito.");items.put(new JSONObject().put("productId",id).put("name",p.optString("name")).put("quantity",amount).put("price",p.optDouble("price")));p.put("stock",p.optInt("stock")-amount);}
-            JSONArray old=state.getJSONArray("orders");JSONObject order=copy(details).put("id",UUID.randomUUID().toString()).put("number",state.optInt("nextNumber",1)).put("items",items).put("fulfillment",mode).put("payment",payment).put("subtotal",subtotal).put("fee",fee).put("total",SaleRules.money(subtotal+fee)).put("status","local").put("paid",false).put("createdAt",System.currentTimeMillis());
-            SaleSchedule.copyInto(order,settings);
-            if(mode.equals("pickup")){order.remove("address");order.remove("reference");order.remove("zoneId");order.remove("meeting");order.remove("deliveryLocation");}
-            JSONArray orders=new JSONArray().put(order);for(int i=0;i<old.length()&&i<49;i++)orders.put(old.get(i));state.put("orders",orders).put("nextNumber",order.optInt("number")+1).put("cart",new JSONObject()).put("details",copy(details));save();return copy(order);
+            order.put("number",state.optInt("nextNumber",1)).remove("serverUrl");order.put("sendState","device_pending");
+            JSONArray orders=new JSONArray().put(order),old=state.getJSONArray("orders");for(int i=0;i<old.length();i++)orders.put(old.get(i));
+            state.put("orders",orders).put("nextNumber",order.optInt("number")+1).put("cart",new JSONObject()).put("details",DeliveryDestination.normalized(details)).remove("cartSale");save();return copy(order);
         }catch(Exception error){state=before;throw error;}
+    }
+    synchronized JSONArray pending(){JSONArray result=new JSONArray(),orders=state.optJSONArray("orders");for(int i=0;i<orders.length();i++){JSONObject order=orders.optJSONObject(i);if(Arrays.asList("pending","device_pending","unbound").contains(order.optString("sendState")))result.put(copy(order));}return result;}
+    synchronized void acceptOrder(String localId,JSONObject response)throws Exception{
+        JSONObject before=copy(state);try{
+            JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++){
+                JSONObject old=orders.getJSONObject(i);if(!old.optString("id").equals(localId))continue;
+                JSONObject source=response.optJSONObject("order")!=null?response.getJSONObject("order"):response;JSONObject accepted=copy(source);accepted.put("sendState","sent").put("requestId",old.optString("requestId",old.optString("id"))).put("storeId",old.optString("storeId",storeId()));orders.put(i,accepted);save();return;
+            }
+        }catch(Exception error){state=before;throw error;}
+    }
+    synchronized void markProblem(String id,String message)throws Exception{JSONObject before=copy(state);try{JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++)if(orders.getJSONObject(i).optString("id").equals(id))orders.getJSONObject(i).put("sendState","review").put("syncError",message);save();}catch(Exception error){state=before;throw error;}}
+    synchronized void restoreToCart(String id)throws Exception{
+        if(count()>0)throw new Exception("Vacía o termina tu carrito actual antes de revisar esta solicitud.");JSONObject before=copy(state);
+        try{JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++){
+            JSONObject order=orders.getJSONObject(i);if(!order.optString("id").equals(id))continue;
+            if(!Arrays.asList("review","legacy","unbound").contains(order.optString("sendState")))throw new Exception("Esta solicitud puede estar recibida. Primero actualiza su estado.");
+            JSONObject cart=new JSONObject();JSONArray items=order.getJSONArray("items");for(int j=0;j<items.length();j++){JSONObject item=items.getJSONObject(j);if(find(item.optString("productId"))!=null)cart.put(item.optString("productId"),item.optInt("quantity"));}
+            state.put("cart",cart).put("cartSale",SaleSchedule.key(order)).put("details",copy(order));order.put("sendState","superseded");save();return;
+        }}catch(Exception error){state=before;throw error;}
     }
 }

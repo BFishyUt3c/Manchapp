@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <instrumentation android:name="pe.manchapp.beta.CustomerChecks" android:targetPackage="pe.manchapp.pedidos" android:label="Local prototype data checks" />
   <instrumentation android:name="pe.manchapp.beta.CustomerUiChecks" android:targetPackage="pe.manchapp.pedidos" android:label="Checkout workflow checks" />
+  <instrumentation android:name="pe.manchapp.beta.ConnectedChecks" android:targetPackage="pe.manchapp.pedidos" android:label="Connected order checks" />
 </manifest>

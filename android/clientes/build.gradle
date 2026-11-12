@@ -3,12 +3,13 @@ plugins { id 'com.android.application' }
 android {
     namespace 'pe.manchapp.pedidos'
     compileSdk 35
+    testOptions { unitTests.includeAndroidResources = true; unitTests.all { maxHeapSize = '1024m'; systemProperty 'manchapp.root', rootProject.projectDir.absolutePath; systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2' } }
     defaultConfig {
         applicationId 'pe.manchapp.pedidos'
         minSdk 24
         targetSdk 28
-        versionCode 6
-        versionName '0.6.2'
+        versionCode 8
+        versionName '0.8.0'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -19,7 +20,7 @@ android {
     sourceSets {
         main {
             java.srcDirs = ['src/main/java', '../app/src/main/java']
-            java.includes = ['**/CustomerActivity.java', '**/CustomerStore.java', '**/DeliveryLocator.java', '**/NativeUi.java', '**/DishArt.java', '**/ImageTools.java', '**/SaleRules.java', '**/SaleSchedule.java', '**/DeliveryDestination.java']
+            java.includes = ['**/CustomerActivity.java', '**/CustomerStore.java', '**/DeviceBridgeClient.java', '**/DeliveryLocator.java', '**/NativeUi.java', '**/DishArt.java', '**/ImageTools.java', '**/SaleRules.java', '**/SaleSchedule.java', '**/DeliveryDestination.java', '**/SafeJson.java', '**/CrossFile.java', '**/HttpApi.java', '**/OrderDraft.java', '**/RecoveryScreen.java']
             assets.srcDirs = ['../app/src/main/assets']
         }
     }
@@ -30,4 +31,9 @@ android {
         }
         buildTypes { debug { signingConfig signingConfigs.demo } }
     }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.17'
 }

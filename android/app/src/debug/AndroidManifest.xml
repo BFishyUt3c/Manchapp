@@ -3,4 +3,5 @@
   <instrumentation android:name="pe.manchapp.beta.PhotoChecks" android:targetPackage="pe.manchapp.beta" android:label="Photo processing checks" />
   <instrumentation android:name="pe.manchapp.beta.EditorUiChecks" android:targetPackage="pe.manchapp.beta" android:label="Editor workflow checks" />
   <instrumentation android:name="pe.manchapp.beta.PhotoCropChecks" android:targetPackage="pe.manchapp.beta" android:label="Crop and transparency checks" />
+  <instrumentation android:name="pe.manchapp.beta.OfflineOwnerChecks" android:targetPackage="pe.manchapp.beta" android:label="Offline and connected owner checks" />
 </manifest>

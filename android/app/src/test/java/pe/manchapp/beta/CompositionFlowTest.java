@@ -1,0 +1,64 @@
+package pe.manchapp.beta;
+
+import android.app.*;
+import android.content.*;
+import android.graphics.*;
+import android.net.Uri;
+import android.view.*;
+import android.widget.FrameLayout;
+import org.json.*;
+import org.junit.*;
+import org.junit.runner.RunWith;
+import org.robolectric.*;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.annotation.*;
+import org.robolectric.shadows.ShadowLooper;
+import java.io.*;
+import java.lang.reflect.*;
+import static org.junit.Assert.*;
+
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk=30,qualifiers="w360dp-h640dp-xhdpi",shadows=PhotoEditorUiTest.PreviewRenderer.class,instrumentedPackages={"pe.manchapp.beta"})
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+public class CompositionFlowTest {
+    private Context context;
+    private Bitmap product,back;
+    @Before public void setup(){context=RuntimeEnvironment.getApplication();product=Bitmap.createBitmap(100,100,Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(product);Paint paint=new Paint();paint.setColor(Color.RED);canvas.drawRect(25,25,75,75,paint);back=Bitmap.createBitmap(200,100,Bitmap.Config.ARGB_8888);back.eraseColor(Color.BLUE);}
+    @After public void release(){product.recycle();back.recycle();}
+    private static Object field(Object target,String name)throws Exception{Field field=target.getClass().getDeclaredField(name);field.setAccessible(true);return field.get(target);}
+    private static Object call(Object target,String name,Class<?>[] types,Object...args)throws Exception{Method method=target.getClass().getDeclaredMethod(name,types);method.setAccessible(true);return method.invoke(target,args);}
+    private void waitIdle(Object activity)throws Exception{long until=System.currentTimeMillis()+10000;while((Boolean)field(activity,"busy")&&System.currentTimeMillis()<until){Thread.sleep(20);ShadowLooper.idleMainLooper();}assertFalse((Boolean)field(activity,"busy"));}
+    private void shot(View root)throws Exception{root.measure(View.MeasureSpec.makeMeasureSpec(720,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(1280,View.MeasureSpec.EXACTLY));root.layout(0,0,720,1280);Bitmap bitmap=Bitmap.createBitmap(720,1280,Bitmap.Config.ARGB_8888);root.draw(new Canvas(bitmap));java.nio.file.Path dir=java.nio.file.Paths.get(System.getProperty("manchapp.root"),"tmp","ui-v073");java.nio.file.Files.createDirectories(dir);try(OutputStream out=java.nio.file.Files.newOutputStream(dir.resolve("compose.png"))){bitmap.compress(Bitmap.CompressFormat.PNG,100,out);}bitmap.recycle();}
+    @Test public void transparentProductsCombineOverRealBackgroundWithOrderAndBoundedCanvas()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);String first=doc.layers().getJSONObject(0).getString("id");Bitmap exported=doc.export();assertEquals(Color.BLUE,exported.getPixel(0,0));assertEquals(Color.RED,exported.getPixel(100,50));exported.recycle();
+        Bitmap green=Bitmap.createBitmap(100,100,Bitmap.Config.ARGB_8888);green.eraseColor(Color.GREEN);String second=doc.addProduct(green);green.recycle();doc.layer(second).put("x",.5);exported=doc.export();assertEquals(Color.GREEN,exported.getPixel(100,50));exported.recycle();
+        doc.state.put("layers",new JSONArray().put(doc.layer(second)).put(doc.layer(first)));exported=doc.export();assertEquals(Color.RED,exported.getPixel(100,50));exported.recycle();doc.zoom(first,.5f);doc.pan(first,.2f,0);doc.state.put("format","portrait");doc.zoom("background",2);doc.pan("background",100,-100);doc.save();
+        CompositionDocument restored=CompositionDocument.open(context,doc.id());assertEquals(doc.state.toString(),restored.state.toString());exported=restored.export();assertEquals(768,exported.getWidth());assertEquals(960,exported.getHeight());assertEquals(Color.BLUE,exported.getPixel(0,0));assertEquals(Color.BLUE,exported.getPixel(767,959));exported.recycle();
+        doc.addProduct(product);doc.addProduct(product);try{doc.addProduct(product);fail("More than four products must be rejected");}catch(IOException expected){assertTrue(expected.getMessage().contains("4 productos"));}assertEquals(4,doc.layers().length());doc.close();restored.close();
+    }
+    @Test public void actualDragMovesOnlySelectedProductAndPersistsOnRelease()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);String id=doc.layers().getJSONObject(0).getString("id");final int[] saved={0};PhotoCompositionView view=new PhotoCompositionView(context,doc,id,new PhotoCompositionView.Listener(){public void selected(){}public void failed(){fail("Composition cannot fail while drawing");}public void changed(String before){try{doc.save();saved[0]++;}catch(Exception error){throw new RuntimeException(error);}}});FrameLayout host=new FrameLayout(context);host.addView(view,new FrameLayout.LayoutParams(-1,-1));host.measure(View.MeasureSpec.makeMeasureSpec(720,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));host.layout(0,0,720,800);
+        long now=android.os.SystemClock.uptimeMillis();for(int i=0;i<3;i++){MotionEvent event=MotionEvent.obtain(now,now+i*30,i==0?MotionEvent.ACTION_DOWN:i==1?MotionEvent.ACTION_MOVE:MotionEvent.ACTION_UP,i==0?360:460,400,0);assertTrue(view.onTouchEvent(event));event.recycle();}assertEquals(1,saved[0]);assertTrue(doc.layer(id).getDouble("x")>.6);assertEquals(0,doc.state.getDouble("bgX"),0);assertEquals(doc.layer(id).getDouble("x"),CompositionDocument.open(context,doc.id()).layer(id).getDouble("x"),0);
+    }
+    @Test public void tappingCanvasSelectsTopProductFromBackgroundAndEmptyAreaReturnsToBackground()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);String id=doc.layers().getJSONObject(0).getString("id");final int[] selected={0};PhotoCompositionView view=new PhotoCompositionView(context,doc,"background",new PhotoCompositionView.Listener(){public void selected(){selected[0]++;}public void failed(){fail("Composition cannot fail while selecting");}public void changed(String before){}});FrameLayout host=new FrameLayout(context);host.addView(view,new FrameLayout.LayoutParams(-1,-1));host.measure(View.MeasureSpec.makeMeasureSpec(720,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));host.layout(0,0,720,800);
+        long now=android.os.SystemClock.uptimeMillis();MotionEvent down=MotionEvent.obtain(now,now,MotionEvent.ACTION_DOWN,360,400,0),up=MotionEvent.obtain(now,now+20,MotionEvent.ACTION_UP,360,400,0);assertTrue(view.onTouchEvent(down));assertTrue(view.onTouchEvent(up));down.recycle();up.recycle();assertEquals(id,view.selected);assertEquals(1,selected[0]);
+        down=MotionEvent.obtain(now,now+40,MotionEvent.ACTION_DOWN,view.frame.left+5,view.frame.top+5,0);up=MotionEvent.obtain(now,now+60,MotionEvent.ACTION_UP,view.frame.left+5,view.frame.top+5,0);assertTrue(view.onTouchEvent(down));assertTrue(view.onTouchEvent(up));down.recycle();up.recycle();assertEquals("background",view.selected);assertEquals(2,selected[0]);
+    }
+    @Test public void actualGalleryImportAddsSeparateLayerAndSaveCanBeReopened()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);Intent intent=new Intent(context,PhotoComposeActivity.class).putExtra("compositionId",doc.id());
+        try(ActivityController<PhotoComposeActivity> controller=Robolectric.buildActivity(PhotoComposeActivity.class,intent).setup().visible()){
+            PhotoComposeActivity activity=controller.get();View root=(View)field(activity,"root");assertTrue(root.findViewWithTag("compose:add").performClick());assertEquals(Intent.ACTION_OPEN_DOCUMENT,Shadows.shadowOf(activity).getNextStartedActivityForResult().intent.getAction());ByteArrayOutputStream bytes=new ByteArrayOutputStream();product.compress(Bitmap.CompressFormat.PNG,100,bytes);Uri uri=Uri.parse("content://composition-test/second.png");Shadows.shadowOf(context.getContentResolver()).registerInputStreamSupplier(uri,()->new ByteArrayInputStream(bytes.toByteArray()));call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},72,Activity.RESULT_OK,new Intent().setData(uri));waitIdle(activity);CompositionDocument current=(CompositionDocument)field(activity,"document");assertEquals(2,current.layers().length());shot((View)field(activity,"root"));assertEquals(2,CompositionDocument.open(context,doc.id()).layers().length());call(activity,"changeFormat",new Class<?>[]{String.class},"square");assertTrue(root.findViewWithTag("compose:save").performClick());long until=System.currentTimeMillis()+10000;while(!activity.isFinishing()&&System.currentTimeMillis()<until){Thread.sleep(20);ShadowLooper.idleMainLooper();}assertTrue(activity.isFinishing());Bitmap image=ImageTools.decode(SafeJson.read(new FileInputStream(PhotoEditorActivity.output(activity))));assertEquals(960,image.getWidth());assertEquals(960,image.getHeight());image.recycle();assertEquals(doc.id(),Shadows.shadowOf(activity).getResultIntent().getStringExtra("compositionId"));
+        }
+    }
+    @Test public void compositionBindingDoesNotReopenStaleImage()throws Exception{String image=ImageTools.encodeEdited(product);CompositionDocument doc=CompositionDocument.create(context,product,back);PhotoOriginals.linkComposition(context,"product-test",image,doc.id());assertEquals(doc.id(),PhotoOriginals.composition(context,"product-test",image));assertEquals("",PhotoOriginals.composition(context,"product-test",image+"changed"));}
+    @Test public void studioReopensEditableCompositionInsteadOfFlattenedEditor()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);String source=ImageTools.encodeEdited(product);try(OutputStream out=new FileOutputStream(PhotoStudioActivity.workspace(context))){out.write(new JSONObject().put("source",source).put("image",source).toString().getBytes("UTF-8"));}Bitmap image=doc.export();String encoded=ImageTools.encodeEdited(image);image.recycle();try(OutputStream out=new FileOutputStream(PhotoEditorActivity.output(context))){out.write(encoded.getBytes("UTF-8"));}
+        try(ActivityController<PhotoStudioActivity> controller=Robolectric.buildActivity(PhotoStudioActivity.class).setup().visible()){PhotoStudioActivity activity=controller.get();call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},84,Activity.RESULT_OK,new Intent().putExtra("compositionId",doc.id()));waitIdle(activity);assertEquals(doc.id(),PhotoStudioActivity.read(context).getString("compositionId"));}
+        try(ActivityController<PhotoStudioActivity> controller=Robolectric.buildActivity(PhotoStudioActivity.class).setup().visible()){PhotoStudioActivity activity=controller.get();call(activity,"edit",new Class<?>[0]);Intent opened=Shadows.shadowOf(activity).getNextStartedActivityForResult().intent;assertEquals(PhotoComposeActivity.class.getName(),opened.getComponent().getClassName());assertEquals(doc.id(),opened.getStringExtra("compositionId"));call(activity,"restoreOriginal",new Class<?>[0]);assertFalse(PhotoStudioActivity.read(context).has("compositionId"));assertEquals(source,PhotoStudioActivity.read(context).getString("image"));}
+    }
+    @Test public void savingProductKeepsLocalCompositionLinkOutOfSharedCatalog()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);String encoded=ImageTools.encodeEdited(product);try(OutputStream out=new FileOutputStream(PhotoStudioActivity.workspace(context))){out.write(new JSONObject().put("source",encoded).put("image",encoded).put("compositionId",doc.id()).toString().getBytes("UTF-8"));}
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup().visible()){MainActivity activity=controller.get();LocalStore store=(LocalStore)field(activity,"store");JSONObject existing=store.snapshot().getJSONArray("products").getJSONObject(0);call(activity,"attachStudioPhoto",new Class<?>[]{JSONObject.class,boolean.class},existing,true);Field step=MainActivity.class.getDeclaredField("editorStep");step.setAccessible(true);step.setInt(activity,1);call(activity,"render",new Class<?>[0]);ViewGroup footer=(ViewGroup)field(activity,"footer");footer.getChildAt(0).performClick();org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick();ShadowLooper.idleMainLooper();JSONArray pending=store.snapshot().getJSONArray("pending");JSONObject shared=pending.getJSONObject(pending.length()-1).getJSONObject("data");assertFalse(shared.has("_sourcePhoto"));assertFalse(shared.has("_compositionId"));assertFalse(shared.has("_compositionHash"));assertEquals(doc.id(),PhotoOriginals.composition(context,existing.getString("id"),encoded));}
+    }
+}

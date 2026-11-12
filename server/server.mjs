@@ -1,13 +1,14 @@
 import http from 'node:http';
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, createReadStream } from 'node:fs';
+import { mkdirSync, existsSync, createReadStream } from 'node:fs';
 import { join, resolve, extname, sep } from 'node:path';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { seedProducts, seedPromos, seedSettings } from './seed.mjs';
 
-import { deliveryDestination } from './destination.mjs';
-import { scheduleError, bookingError, scheduleSnapshot, transitionError } from './schedule.mjs';
+import { loadState, saveState } from './storage.mjs';
+import { createBooking } from './booking.mjs';
+import { scheduleError, scheduleSnapshot, transitionError } from './schedule.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const statuses = ['registered', 'confirmed', 'preparing', 'ready', 'sale_day', 'pickup_available', 'delivering', 'delivered', 'cancelled'];
@@ -17,7 +18,7 @@ const requireThat = (condition, message, status = 400) => { if (!condition) thro
 const clean = (value, max = 200) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 const money = (value) => Math.round(value * 100) / 100;
 const imageOk = (value) => !value || (typeof value === 'string' && value.length < 900_000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value));
-function publicOrder(order) { const { token: _token, requestId: _requestId, ...visible } = order; return visible; }
+function publicOrder(order) { const { token: _token, requestId: _requestId, requestHash: _requestHash, ...visible } = order; return visible; }
 function authenticate(req, key) {
   const supplied = Buffer.from(req.headers['x-manchapp-key'] || '');
   const expected = Buffer.from(key);
@@ -31,54 +32,33 @@ async function body(req) {
 export function createApp({ dataDir = join(projectRoot, '.data'), staticDir = join(projectRoot, 'dist'), now = () => Date.now() } = {}) {
   mkdirSync(dataDir, { recursive: true });
   const file = join(dataDir, 'state.json');
-  const state = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { products: structuredClone(seedProducts), promos: structuredClone(seedPromos), settings: structuredClone(seedSettings), orders: [], nextNumber: 1, revision: 1, adminKey: randomBytes(18).toString('hex'), operations: [] };
-  const persist = () => { writeFileSync(file + '.tmp', JSON.stringify(state, null, 2)); renameSync(file + '.tmp', file); };
+  const state = loadState(file, () => ({ products: structuredClone(seedProducts.filter(product => product.line === 'commercial')), promos: structuredClone(seedPromos), settings: structuredClone(seedSettings), orders: [], nextNumber: 1, revision: 1, adminKey: randomBytes(18).toString('hex'), operations: [] }));
+  state.storeId ||= randomUUID();
+  const persist = () => saveState(file, state);
+  const transact = action => {
+    const before = structuredClone(state);
+    try { const result = action(); persist(); return result; }
+    catch (error) { for (const key of Object.keys(state)) delete state[key]; Object.assign(state, before); throw error; }
+  };
   persist();
-  const settingsForClient = () => ({ ...state.settings, deliveryFreeFrom: state.settings.deliveryFreeFrom || 0, catalogUrl: state.settings.catalogUrl || `http://${localAddress()}:${server.address()?.port || 4173}` });
-  const snapshot = () => ({ products: state.products, promos: state.promos, settings: settingsForClient(), orders: state.orders.map(publicOrder), revision: state.revision });
+  const settingsForClient = () => ({ ...state.settings, deliveryFreeFrom: state.settings.deliveryFreeFrom || 0, catalogUrl: state.settings.catalogUrl || '' });
+  const snapshot = () => ({ storeId: state.storeId, products: state.products, promos: state.promos, settings: settingsForClient(), orders: state.orders.map(publicOrder), revision: state.revision });
   const send = (res, code, value) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(value)); };
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const path = url.pathname;
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-      if (path === '/api/health') { send(res, 200, { ok: true }); return; }
+      if (path === '/api/health') { send(res, 200, { ok: true, protocol: 2, storeId: state.storeId }); return; }
       if (req.method === 'GET' && path === '/api/catalog') {
+        if (url.searchParams.get('storeId') === state.storeId && Number(url.searchParams.get('since')) === state.revision) { send(res, 200, { notModified: true, storeId: state.storeId, revision: state.revision }); return; }
         const promos = state.promos.filter(p => p.active).map(p => ({ ...p, price: state.products.find(product => product.id === p.productId)?.price ?? p.price }));
-        send(res, 200, { products: state.products, promos, settings: settingsForClient(), revision: state.revision }); return;
+        send(res, 200, { storeId: state.storeId, products: state.products.filter(product => product.line === 'commercial'), promos, settings: settingsForClient(), revision: state.revision }); return;
       }
       if (req.method === 'POST' && path === '/api/orders') {
         const input = await body(req);
-        requireThat(typeof input.requestId === 'string' && /^[\w-]{8,100}$/.test(input.requestId), 'No se pudo identificar el pedido. Intenta nuevamente.');
-        const previous = state.orders.find(o => o.requestId === input.requestId);
-        if (previous) { send(res, 200, { order: publicOrder(previous), token: previous.token }); return; }
-        const closed = bookingError(state.settings, now()); requireThat(!closed, closed, 409);
-        requireThat(Array.isArray(input.items) && input.items.length > 0 && input.items.length <= 30, 'Agrega al menos un producto.');
-        const customer = clean(input.customer, 80), phone = clean(input.phone, 30);
-        requireThat(customer.length >= 2 && /^9\d{8}$/.test(phone), 'Completa tu nombre y un celular peruano de 9 dígitos.');
-        requireThat(['pickup', 'delivery'].includes(input.fulfillment), 'Elige recojo o delivery.');
-        requireThat(['cash', 'yape', 'plin'].includes(input.payment), 'Elige cómo pagarás.');
-        const quantities = new Map();
-        for (const item of input.items) { requireThat(typeof item.productId === 'string' && Number.isInteger(item.quantity) && item.quantity > 0 && item.quantity <= 99, 'Revisa las cantidades del pedido.'); quantities.set(item.productId, (quantities.get(item.productId) || 0) + item.quantity); }
-        const items = [...quantities].map(([productId, quantity]) => {
-          const product = state.products.find(p => p.id === productId);
-          requireThat(product && product.line === 'commercial' && product.available && product.stock >= quantity, 'Un producto ya no tiene esa cantidad disponible. Actualiza tu pedido.', 409);
-          return { productId, name: product.name, price: product.price, quantity };
-        });
-        const zone = input.fulfillment === 'delivery' ? state.settings.zones.find(z => z.id === input.zoneId && z.enabled) : null;
-        const destination = input.fulfillment === 'delivery' ? deliveryDestination(input, state.settings.saleDate) : { address: '', reference: '' };
-        requireThat(!destination.error, destination.error);
-        const { address, reference } = destination;
-        if (input.fulfillment === 'delivery') requireThat(zone && address.length >= 4 && reference.length >= 3, 'Completa sector, dirección y una referencia para la entrega.');
-        const subtotal = money(items.reduce((sum, item) => sum + item.price * item.quantity, 0));
-        const freeFrom = state.settings.deliveryFreeFrom || 0;
-        const deliveryOffer = Boolean(zone && freeFrom > 0 && subtotal >= freeFrom);
-        const fee = zone && !deliveryOffer ? zone.fee : 0;
-        const order = { id: randomUUID(), number: state.nextNumber++, requestId: input.requestId, token: randomBytes(20).toString('hex'), customer, phone, items, subtotal, fee, deliveryOffer, total: money(subtotal + fee), fulfillment: input.fulfillment, zone: zone?.name || '', address: zone ? address : '', reference: zone ? reference : '', payment: input.payment, paid: false, status: 'registered', driver: '', createdAt: new Date().toISOString(), version: 1 };
-        Object.assign(order, scheduleSnapshot(state.settings));
-        if (destination.deliveryLocation) order.deliveryLocation = destination.deliveryLocation;
-        for (const item of items) { const p = state.products.find(p => p.id === item.productId); p.stock -= item.quantity; p.version++; }
-        state.orders.unshift(order); state.revision++; persist(); send(res, 201, { order: publicOrder(order), token: order.token }); return;
+        const result = transact(() => createBooking(state, input, now()));
+        send(res, result.reused ? 200 : 201, { order: publicOrder(result.order), token: result.order.token }); return;
       }
       if (req.method === 'GET' && /^\/api\/orders\/[^/]+$/.test(path)) {
         const order = state.orders.find(o => o.id === path.split('/').pop());
@@ -87,17 +67,20 @@ export function createApp({ dataDir = join(projectRoot, '.data'), staticDir = jo
       }
       if (path.startsWith('/api/admin/')) {
         authenticate(req, state.adminKey);
-        if (req.method === 'GET' && path === '/api/admin/state') { send(res, 200, snapshot()); return; }
+        if (req.method === 'GET' && path === '/api/admin/state') { send(res, 200, url.searchParams.get('storeId') === state.storeId && Number(url.searchParams.get('since')) === state.revision ? { notModified: true, storeId: state.storeId, revision: state.revision } : snapshot()); return; }
         if (req.method === 'POST' && path === '/api/admin/operations') {
           const input = await body(req);
           requireThat(typeof input.id === 'string' && input.id.length < 100, 'Operación no válida.');
           if (state.operations.includes(input.id)) { send(res, 200, snapshot()); return; }
+          transact(() => {
           const data = input.data || {};
-          if (input.type === 'product') {
+          if (input.type === 'manualOrder') {
+            createBooking(state, data, now(), true);
+          } else if (input.type === 'product') {
             const old = state.products.find(p => p.id === data.id);
             requireThat(typeof data.id === 'string' && /^[\w-]{1,100}$/.test(data.id), 'Producto no válido.');
             requireThat(clean(data.name, 80).length >= 2 && Number.isFinite(data.price) && data.price > 0 && data.price <= 10000, 'Revisa el nombre y el precio del producto.');
-            requireThat(Number.isInteger(data.stock) && data.stock >= 0 && data.stock <= 10000 && ['social', 'commercial'].includes(data.line), 'Revisa la cantidad y el tipo de producto.');
+            requireThat(Number.isInteger(data.stock) && data.stock >= 0 && data.stock <= 10000 && data.line === 'commercial', 'Revisa la cantidad y el tipo de producto.');
             requireThat(imageOk(data.image), 'Usa una foto JPG, PNG o WebP de menor tamaño.');
             requireThat(data.saleUnit === undefined || ['unit', 'portion', 'combo', 'cup'].includes(data.saleUnit), 'Revisa si vendes por unidad, porción, combo o taza.');
             requireThat(!old || data.version === old.version, 'Este producto cambió mientras estabas sin conexión. Conservamos tu cambio pendiente; revisa la cantidad disponible antes de reenviarlo.', 409);
@@ -117,10 +100,10 @@ export function createApp({ dataDir = join(projectRoot, '.data'), staticDir = jo
             }
             if (target !== order.status) { const invalid = transitionError({ ...order, ...dates }, target, now()); requireThat(!invalid, invalid, 409); }
             requireThat(target === order.status || next[order.status].includes(target), 'Ese cambio no corresponde al estado del pedido.', 409);
-            if (target === 'delivering') requireThat(clean(data.driver, 80).length >= 2, 'Anota quién hará el reparto.');
-            if (target === 'cancelled' && order.status !== 'cancelled') for (const item of order.items) { const p = state.products.find(p => p.id === item.productId); if (p) { p.stock += item.quantity; p.version++; } }
+            if (target === 'delivering') requireThat(clean(data.driver ?? order.driver, 80).length >= 2, 'Anota quién hará el reparto.');
+            if (target === 'cancelled' && order.status !== 'cancelled' && order.saleDate === state.settings.saleDate) for (const item of order.items) { const p = state.products.find(p => p.id === item.productId); if (p) { p.stock += item.quantity; p.version++; } }
             if (dates) Object.assign(order, dates);
-            order.status = target; order.paid = typeof data.paid === 'boolean' ? data.paid : order.paid; order.driver = clean(data.driver ?? order.driver, 80); order.version++;
+            order.status = target; order.paid = typeof data.paid === 'boolean' ? data.paid : order.paid; order.driver = clean(data.driver ?? order.driver, 80); order.deliveryWindow = clean(data.deliveryWindow ?? order.deliveryWindow, 100); order.cancelReason = clean(data.cancelReason ?? order.cancelReason, 200); order.version++;
           } else if (input.type === 'promo') {
             requireThat(clean(data.title, 80).length >= 3 && clean(data.description, 250).length >= 3 && Number.isFinite(data.price) && data.price > 0, 'Completa título, contenido y precio de la oferta.');
             const promo = { id: clean(data.id, 100) || randomUUID(), title: clean(data.title, 80), description: clean(data.description, 250), price: money(data.price), productId: clean(data.productId, 100), hours: clean(data.hours, 100), active: Boolean(data.active) };
@@ -138,7 +121,9 @@ export function createApp({ dataDir = join(projectRoot, '.data'), staticDir = jo
             const schedule = { ...scheduleSnapshot(state.settings), ...scheduleSnapshot(data) }; if (schedule.saleDate) { const invalid = scheduleError(schedule); requireThat(!invalid, invalid); }
             state.settings = { ...state.settings, ...schedule, name: clean(data.name, 80), pickup: clean(data.pickup, 200), phone: data.phone || '', hours: clean(data.hours, 120), paymentImage: data.paymentImage || '', deliveryFreeFrom: money(deliveryFreeFrom), catalogUrl, zones };
           } else throw new ApiError(400, 'Acción no reconocida.');
-          state.operations.push(input.id); state.operations = state.operations.slice(-2000); state.revision++; persist(); send(res, 200, snapshot()); return;
+          state.operations.push(input.id); state.operations = state.operations.slice(-2000); state.revision++;
+          });
+          send(res, 200, snapshot()); return;
         }
       }
       if (path.startsWith('/api/')) throw new ApiError(404, 'No se encontró esa opción.');

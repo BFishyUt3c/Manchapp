@@ -70,7 +70,7 @@ final class ImageTools {
             }
         }finally{if(current!=bitmap)current.recycle();}
     }
-    static Bitmap decode(String encoded){try{byte[] bytes=Base64.decode(encoded.substring(encoded.indexOf(',')+1),Base64.DEFAULT);return BitmapFactory.decodeByteArray(bytes,0,bytes.length);}catch(Exception error){return null;}}
+    static Bitmap decode(String encoded){if(encoded==null||encoded.isEmpty())return null;try{byte[] bytes=Base64.decode(encoded.substring(encoded.indexOf(',')+1),Base64.DEFAULT);return BitmapFactory.decodeByteArray(bytes,0,bytes.length);}catch(Exception error){return null;}}
     static String improve(String encoded)throws IOException{
         Bitmap input=decode(encoded);if(input==null)throw new IOException("Elige una foto primero.");double total=0;int count=0;for(int y=0;y<input.getHeight();y+=12)for(int x=0;x<input.getWidth();x+=12){int pixel=input.getPixel(x,y);total+=.2126*Color.red(pixel)+.7152*Color.green(pixel)+.0722*Color.blue(pixel);count++;}
         float lift=(float)Math.max(0,Math.min(32,(137-total/Math.max(1,count))*.55));float contrast=1.04f;float offset=lift+128*(1-contrast);

@@ -3,6 +3,7 @@ dist/
 dist-ssr/
 .tools/
 .data/
+.local-server/
 .gradle/
 .kotlin/
 build/

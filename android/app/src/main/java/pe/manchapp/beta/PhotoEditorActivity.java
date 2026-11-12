@@ -1,165 +1,95 @@
 package pe.manchapp.beta;
 
 import android.app.*;
+import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.graphics.*;
-import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.net.Uri;
 import android.view.*;
 import android.widget.*;
 import java.io.*;
+import java.util.*;
 import java.util.concurrent.*;
 
-/** Photos stay in private files; crop coordinates are the only image state in the bundle. */
 public final class PhotoEditorActivity extends Activity {
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
-    private NativeUi ui;
+    private PhotoUi ui;
     private FoodPhotoEngine engine;
     private Bitmap original,result,comparison;
     private ImageView preview;
     private TextView progress,save,undoCrop;
-    private boolean busy=true,destroyed=false,improve=true,showOriginal=false,includeObjects=false;
-    private String background="original";
+    private boolean busy=true,destroyed=false,improve=true,showOriginal=false,includeObjects=false,sourceTransparent=false;
+    private int intensity=100;
+    private String manualSession="";
+    private String background="original",tool="adjust";
     private final RectF crop=new RectF(0,0,1,1);
-    private LinearLayout options;
+    private LinearLayout root,options,toolBody;
+    private final Map<String,View> toolPanels=new HashMap<>();
+    private final Map<String,TextView> tabs=new HashMap<>(),comparisons=new HashMap<>();
+    private final Map<String,View> backgrounds=new HashMap<>();
+    private final List<Bitmap> swatches=new ArrayList<>();
     private Dialog cropDialog;
     static File input(android.content.Context context){return new File(context.getCacheDir(),"photo-editor-source.jpg");}
     static File output(android.content.Context context){return new File(context.getCacheDir(),"photo-editor-result.txt");}
 
     @Override public void onCreate(Bundle state){
-        super.onCreate(state);ui=new NativeUi(this);includeObjects=getIntent().getBooleanExtra("includeObjects",false);
-        if(state!=null){
-            includeObjects=state.getBoolean("includeObjects",includeObjects);improve=state.getBoolean("improve",true);
-            background=state.getString("background","original");showOriginal=state.getBoolean("showOriginal",false);
-            float[] bounds=state.getFloatArray("crop");if(bounds!=null&&bounds.length==4)crop.set(bounds[0],bounds[1],bounds[2],bounds[3]);
-        }
-        getWindow().setStatusBarColor(NativeUi.DEEP);getWindow().setNavigationBarColor(NativeUi.WINE);draw();
-        worker.execute(()->{
-            try{
-                original=BitmapFactory.decodeFile(input(this).getAbsolutePath());
-                if(original==null)throw new IOException("Vuelve a elegir la foto.");
-                engine=new FoodPhotoEngine(this,original);renderPhoto();
-            }catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){Toast.makeText(this,"No pudimos abrir el editor. La foto del producto se conserva.",Toast.LENGTH_LONG).show();finish();}});}
-        });
+        super.onCreate(state);ui=new PhotoUi(this);includeObjects=getIntent().getBooleanExtra("includeObjects",false);
+        if(state!=null){manualSession=state.getString("manualSession","");includeObjects=state.getBoolean("includeObjects",includeObjects);improve=state.getBoolean("improve",true);intensity=state.getInt("intensity",100);background=state.getString("background","original");tool=state.getString("tool","adjust");showOriginal=state.getBoolean("showOriginal",false);float[] bounds=state.getFloatArray("crop");if(bounds!=null&&bounds.length==4)crop.set(bounds[0],bounds[1],bounds[2],bounds[3]);}
+        getWindow().getDecorView().setSystemUiVisibility(0);getWindow().setStatusBarColor(PhotoUi.BG);getWindow().setNavigationBarColor(PhotoUi.PANEL);draw();
+        worker.execute(()->{try{original=BitmapFactory.decodeFile(input(this).getAbsolutePath());if(original==null)throw new IOException("Vuelve a elegir la foto.");sourceTransparent=ImageTools.hasTransparency(original);engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){Toast.makeText(this,"No pudimos abrir esta foto. La imagen anterior se conserva.",Toast.LENGTH_LONG).show();finish();}});}});
     }
-    private void add(LinearLayout parent,View child,int gap){ui.add(parent,child,gap);}
     private void draw(){
-        LinearLayout root=ui.column();root.setBackgroundColor(NativeUi.BG);setContentView(root);
-        root.addView(ui.toolbar("Mejora tu foto","",()->finish(),null));
-        ScrollView scroll=new ScrollView(this);LinearLayout body=ui.column();body.setPadding(ui.dp(16),ui.dp(16),ui.dp(16),ui.dp(20));
-        scroll.addView(body);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.FIT_CENTER);preview.setBackground(new TransparencyGrid(ui.dp(12)));
-        preview.setContentDescription("Vista previa de la foto del producto");add(body,preview,0);preview.getLayoutParams().height=ui.dp(195);
-        progress=ui.text("Preparando la mejora…",14,NativeUi.WINE,true);progress.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);add(body,progress,12);
-        options=ui.column();add(body,options,0);
-        LinearLayout compare=new LinearLayout(this);
-        for(String name:new String[]{"Original","Resultado"}){
-            boolean before=name.equals("Original");TextView button=ui.button(name,false,null,()->{showOriginal=before;display();});button.setTag(before?"compare:original":"compare:result");addWeighted(compare,button);
-        }
-        add(options,compare,12);
-        add(options,ui.button("Recortar foto",false,null,()->openCrop()),10);
-        undoCrop=ui.button("Deshacer recorte",false,null,()->{crop.set(0,0,1,1);requestRender();});add(options,undoCrop,6);undoCrop.setVisibility(View.GONE);
-        add(options,ui.heading("Elige el fondo",22),18);
-        String[] ids={"original","transparent","blur","wood","marble","cloth"};
-        String[] labels={"Original","Sin fondo","Desenfocado","Madera","Mármol","Mantel"};
-        for(int row=0;row<2;row++){
-            LinearLayout line=new LinearLayout(this);
-            for(int i=row*3;i<row*3+3;i++){
-                String id=ids[i];TextView choice=ui.button(labels[i],false,null,()->{background=id;requestRender();});
-                choice.setTextSize(13);choice.setPadding(ui.dp(4),ui.dp(12),ui.dp(4),ui.dp(12));choice.setTag(id);addWeighted(line,choice);
-            }
-            add(options,line,8);
-        }
-        Switch auto=new Switch(this);auto.setText("Mejorar color y detalle");auto.setTypeface(ui.bold);auto.setTextSize(17);auto.setTextColor(NativeUi.INK);auto.setMinHeight(ui.dp(52));
-        auto.setChecked(improve);auto.setOnCheckedChangeListener((view,checked)->{improve=checked;requestRender();});add(options,auto,16);
-        Switch complete=new Switch(this);complete.setText("Incluir plato y acompañamientos");complete.setTypeface(ui.regular);complete.setTextSize(15);complete.setTextColor(NativeUi.INK);complete.setMinHeight(ui.dp(50));
-        complete.setChecked(includeObjects);complete.setOnCheckedChangeListener((view,checked)->{includeObjects=checked;requestRender();});add(options,complete,6);
-        add(body,ui.text("Revisa que el producto y sus acompañamientos estén completos. Los cuadros grises indican un fondo transparente; no se guardan en la foto.",14,NativeUi.MUTED,false),16);
-        LinearLayout footer=ui.column();footer.setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(10));save=ui.button("Usar esta foto",true,null,()->save());footer.addView(save);root.addView(footer);enabled(false);
+        root=ui.column();root.setBackgroundColor(PhotoUi.BG);setContentView(root);
+        save=ui.button("Listo",true,()->save());save.setTag("editor:save");root.addView(ui.header("Editar foto",ui.icon("back","Volver sin aplicar",()->finish()),save));
+        FrameLayout stage=new FrameLayout(this);stage.setTag("editor:stage");preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.FIT_CENTER);preview.setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12));preview.setContentDescription("Vista previa de tu foto");stage.addView(preview,new FrameLayout.LayoutParams(-1,-1));root.addView(stage,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout compare=new LinearLayout(this);compare.setPadding(ui.dp(3),ui.dp(3),ui.dp(3),ui.dp(3));compare.setBackground(ui.background(0xee24252c,PhotoUi.LINE,20));
+        for(String name:new String[]{"Antes","Después"}){boolean before=name.equals("Antes");String key=before?"original":"result";TextView choice=ui.button(name,false,()->{showOriginal=before;display();});choice.setMinHeight(ui.dp(40));choice.setPadding(ui.dp(17),ui.dp(8),ui.dp(17),ui.dp(8));choice.setTag("compare:"+key);compare.addView(choice);comparisons.put(key,choice);}
+        FrameLayout.LayoutParams comparisonParams=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);comparisonParams.bottomMargin=ui.dp(10);stage.addView(compare,comparisonParams);
+        progress=ui.text("Preparando foto…",12,PhotoUi.MUTED,false);progress.setGravity(Gravity.CENTER);progress.setPadding(ui.dp(16),ui.dp(5),ui.dp(16),ui.dp(7));progress.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);root.addView(progress,new LinearLayout.LayoutParams(-1,-2));
+        options=ui.column();options.setBackground(ui.background(PhotoUi.PANEL,0,22));options.setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(10));root.addView(options);
+        LinearLayout bar=new LinearLayout(this);String[] ids={"crop","adjust","background"},labels={"Recortar","Ajustar","Fondo"},icons={"edit","light","photo"};
+        for(int i=0;i<ids.length;i++){String id=ids[i];TextView tab=ui.button(labels[i],false,()->selectTool(id));tab.setCompoundDrawablesWithIntrinsicBounds(null,new NativeUi.Icon(icons[i],PhotoUi.LIGHT,ui.dp(21)),null,null);tab.setCompoundDrawablePadding(ui.dp(5));tab.setTag("tool:"+id);tabs.put(id,tab);ui.weighted(bar,tab,i==2);}ui.add(options,bar,0);
+        ScrollView toolScroll=new ScrollView(this);toolScroll.setFillViewport(true);toolBody=ui.column();toolBody.setPadding(0,ui.dp(12),0,0);toolScroll.addView(toolBody);options.addView(toolScroll,new LinearLayout.LayoutParams(-1,ui.dp(144)));
+        buildCropTools();buildAdjustTools();buildBackgroundTools();selectTool(tool);enabled(false);
     }
-    private void addWeighted(LinearLayout row,View child){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,-2,1);params.setMargins(0,0,ui.dp(6),0);row.addView(child,params);}
-
+    private void buildCropTools(){LinearLayout panel=ui.column();toolPanels.put("crop",panel);toolBody.addView(panel);LinearLayout row=new LinearLayout(this);ui.weighted(row,ui.button("Recortar foto",true,()->openCrop()),false);undoCrop=ui.button("Restablecer",false,()->{crop.set(0,0,1,1);requestRender();});ui.weighted(row,undoCrop,true);ui.add(panel,row,4);TextView manual=ui.button("Corregir recorte a mano",false,()->openManualMask());manual.setTag("editor:mask");ui.add(panel,manual,8);TextView tip=ui.text("Encuadra el producto sin cortar sus bordes.",13,PhotoUi.MUTED,false);ui.add(panel,tip,12);}
+    private void buildAdjustTools(){LinearLayout panel=ui.column();toolPanels.put("adjust",panel);toolBody.addView(panel);Switch auto=new Switch(this);auto.setText("Mejora automática");auto.setTextColor(PhotoUi.TEXT);auto.setTextSize(15);auto.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));auto.setMinHeight(ui.dp(44));auto.setThumbTintList(ColorStateList.valueOf(PhotoUi.LIGHT));auto.setTrackTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PhotoUi.ACCENT,PhotoUi.SURFACE}));auto.setChecked(improve);ui.add(panel,auto,0);
+        LinearLayout labels=new LinearLayout(this);TextView caption=ui.text("Intensidad",12,PhotoUi.MUTED,false),value=ui.text(intensity+"%",12,PhotoUi.LIGHT,true);labels.addView(caption,new LinearLayout.LayoutParams(0,-2,1));labels.addView(value);ui.add(panel,labels,8);
+        SeekBar slider=new SeekBar(this);slider.setMax(100);slider.setProgress(intensity);slider.setMinHeight(ui.dp(42));slider.setProgressTintList(ColorStateList.valueOf(PhotoUi.LIGHT));slider.setThumbTintList(ColorStateList.valueOf(PhotoUi.LIGHT));slider.setContentDescription("Intensidad de la mejora automática");slider.setEnabled(improve);ui.add(panel,slider,0);
+        auto.setOnCheckedChangeListener((view,checked)->{improve=checked;slider.setEnabled(checked&&!busy);requestRender();});slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar view,int amount,boolean user){if(user){intensity=amount;value.setText(amount+"%");}}public void onStartTrackingTouch(SeekBar view){}public void onStopTrackingTouch(SeekBar view){requestRender();}});
+    }
+    private void buildBackgroundTools(){LinearLayout panel=ui.column();toolPanels.put("background",panel);toolBody.addView(panel);HorizontalScrollView horizontal=new HorizontalScrollView(this);horizontal.setHorizontalScrollBarEnabled(false);LinearLayout row=new LinearLayout(this);String[] ids={"custom","original","transparent","blur"},labels={"Mi fondo","Original","Sin fondo","Desenfocar"};
+        for(int i=0;i<ids.length;i++){String id=ids[i];LinearLayout choice=ui.column();choice.setPadding(ui.dp(4),ui.dp(4),ui.dp(4),ui.dp(4));choice.setGravity(Gravity.CENTER);choice.setTag(id);choice.setOnClickListener(v->{if(id.equals("custom")){pickBackground();return;}background=id;requestRender();});choice.setContentDescription("Fondo: "+labels[i]);ui.role(choice);ImageView swatch=new ImageView(this);swatch.setScaleType(ImageView.ScaleType.CENTER_CROP);swatch.setClipToOutline(true);swatch.setBackground(ui.background(PhotoUi.SURFACE,0,9));
+            if(id.equals("custom"))swatch.setImageDrawable(new NativeUi.Icon("plus",PhotoUi.LIGHT,ui.dp(25)));else if(id.equals("transparent"))swatch.setBackground(new PhotoUi.Checker(ui.dp(7)));else if(id.equals("wood")||id.equals("marble")||id.equals("cloth")){Bitmap bitmap=FoodPhotoEngine.texture(96,64,id);swatches.add(bitmap);swatch.setImageBitmap(bitmap);}else if(id.equals("blur")){android.graphics.drawable.GradientDrawable gradient=new android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TL_BR,new int[]{0xff8e7263,0xff424650,0xffbcaca0});gradient.setCornerRadius(ui.dp(9));swatch.setBackground(gradient);}else swatch.setImageDrawable(new NativeUi.Icon("photo",PhotoUi.MUTED,ui.dp(25)));
+            choice.addView(swatch,new LinearLayout.LayoutParams(ui.dp(58),ui.dp(43)));TextView label=ui.text(labels[i],12,PhotoUi.TEXT,false);label.setGravity(Gravity.CENTER);ui.add(choice,label,6);LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(ui.dp(76),-2);params.rightMargin=ui.dp(4);row.addView(choice,params);backgrounds.put(id,choice);}
+        horizontal.addView(row);ui.add(panel,horizontal,0);Switch complete=new Switch(this);complete.setText("Incluir plato y acompañamientos");complete.setTextColor(PhotoUi.MUTED);complete.setTextSize(13);complete.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));complete.setMinHeight(ui.dp(44));complete.setThumbTintList(ColorStateList.valueOf(PhotoUi.LIGHT));complete.setTrackTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PhotoUi.ACCENT,PhotoUi.SURFACE}));complete.setChecked(includeObjects);complete.setOnCheckedChangeListener((view,checked)->{includeObjects=checked;requestRender();});ui.add(panel,complete,4);
+    }
+    private void applyManualMask()throws Exception{if(manualSession!=null&&!manualSession.isEmpty()){Bitmap mask=MaskEditSession.open(this,manualSession).read("current.png");try{engine.setManualMask(mask);}finally{mask.recycle();}}}
+    private void openManualMask(){if(busy)return;busy=true;enabled(false);progress.setText("Preparando recorte manual…");worker.execute(()->{Bitmap source=null,cutout=null;try{engine.includeObjects(includeObjects);source=engine.render(improve?intensity/100f:0,"original");try{cutout=engine.render(improve?intensity/100f:0,"transparent");}catch(IOException noMask){cutout=source.copy(Bitmap.Config.ARGB_8888,true);}MaskEditSession session=MaskEditSession.create(this,source,cutout);engine.close();engine=null;runOnUiThread(()->{if(!destroyed){busy=false;startActivityForResult(new Intent(this,MaskEditorActivity.class).putExtra("maskSessionId",session.id()).putExtra("restoreLimited",sourceTransparent),93);}});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos abrir la corrección manual. La foto anterior se conserva.");}});}finally{if(source!=null)source.recycle();if(cutout!=null)cutout.recycle();}});}
+    private void pickBackground(){if(busy)return;try{startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE),91);}catch(Exception error){Toast.makeText(this,"No pudimos abrir la galería.",Toast.LENGTH_LONG).show();}}
+    @Override protected void onActivityResult(int request,int code,Intent data){super.onActivityResult(request,code,data);if(request==93){if(code==RESULT_OK&&data!=null){manualSession=data.getStringExtra("maskSessionId");background="transparent";}busy=true;enabled(false);worker.execute(()->{try{if(engine==null)engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos aplicar el recorte. La foto anterior sigue aquí.");}});}});return;}
+        if(request==92){if(code==RESULT_OK){setResult(RESULT_OK,data);finish();}else if(engine==null&&!destroyed){busy=true;enabled(false);progress.setText("Abriendo editor…");worker.execute(()->{try{engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos reabrir los ajustes. Tu foto anterior sigue disponible.");}});}});}return;}
+        if(request!=91||code!=RESULT_OK||data==null||data.getData()==null)return;final Uri uri=data.getData();final RectF bounds=new RectF(crop);final float strength=improve?intensity/100f:0;busy=true;enabled(false);progress.setText("Separando el producto para tu fondo…");worker.execute(()->{Bitmap back=null,cutout=null,framed=null,raw=null,rawFrame=null;try{back=ImageTools.read(this,uri);if(engine==null)engine=new FoodPhotoEngine(this,original);engine.includeObjects(includeObjects);cutout=engine.render(strength,"transparent");framed=PhotoCropView.apply(cutout,bounds);raw=engine.render(strength,"original");rawFrame=PhotoCropView.apply(raw,bounds);CompositionDocument document=CompositionDocument.create(this,framed,back,rawFrame);String id=document.id();document.close();engine.close();engine=null;runOnUiThread(()->{if(!destroyed){busy=false;startActivityForResult(new Intent(this,PhotoComposeActivity.class).putExtra("compositionId",id),92);}});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos preparar la composición. Tu edición sigue aquí.");Toast.makeText(this,error instanceof IOException?error.getMessage():"Prueba un fondo más pequeño.",Toast.LENGTH_LONG).show();}});}finally{if(rawFrame!=null&&rawFrame!=raw)rawFrame.recycle();if(raw!=null)raw.recycle();if(framed!=null&&framed!=cutout)framed.recycle();if(cutout!=null)cutout.recycle();if(back!=null)back.recycle();}});
+    }
+    private void selectTool(String selected){tool=toolPanels.containsKey(selected)?selected:"adjust";for(Map.Entry<String,View> entry:toolPanels.entrySet())entry.getValue().setVisibility(entry.getKey().equals(tool)?View.VISIBLE:View.GONE);for(Map.Entry<String,TextView> entry:tabs.entrySet()){boolean active=entry.getKey().equals(tool);entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,0,12));entry.getValue().setTextColor(active?PhotoUi.TEXT:PhotoUi.MUTED);}}
     private void openCrop(){
-        if(busy||destroyed||original==null||cropDialog!=null)return;
-        Dialog dialog=new Dialog(this,android.R.style.Theme_Material_Light_NoActionBar);cropDialog=dialog;
-        LinearLayout root=ui.column();root.setBackgroundColor(NativeUi.BG);dialog.setContentView(root);
-        root.addView(ui.toolbar("Recortar foto","",()->dialog.dismiss(),null));
-        TextView hint=ui.text("Arrastra las esquinas para encuadrar el producto. Mueve el centro para ajustar la posición.",15,NativeUi.INK,false);hint.setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12));root.addView(hint);
-        PhotoCropView frame=new PhotoCropView(this,original,crop);frame.setTag("crop:frame");root.addView(frame,new LinearLayout.LayoutParams(-1,0,1));
-        LinearLayout footer=ui.column();footer.setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12));
-        LinearLayout tools=new LinearLayout(this);
-        TextView zoomIn=ui.button("Acercar",false,null,()->frame.zoom(true));zoomIn.setTextSize(14);addWeighted(tools,zoomIn);
-        TextView zoomOut=ui.button("Alejar",false,null,()->frame.zoom(false));zoomOut.setTextSize(14);addWeighted(tools,zoomOut);
-        TextView reset=ui.button("Foto completa",false,null,()->frame.reset());reset.setTextSize(14);reset.setPadding(ui.dp(4),ui.dp(12),ui.dp(4),ui.dp(12));addWeighted(tools,reset);add(footer,tools,0);
-        TextView apply=ui.button("Aplicar recorte",true,null,()->{crop.set(frame.crop());dialog.dismiss();requestRender();});apply.setTag("crop:apply");add(footer,apply,10);
-        TextView cancel=ui.button("Cancelar",false,null,()->dialog.dismiss());cancel.setTag("crop:cancel");add(footer,cancel,6);root.addView(footer);
-        dialog.setOnDismissListener(value->{if(cropDialog==dialog)cropDialog=null;});dialog.show();
-        Window window=dialog.getWindow();if(window!=null){window.setLayout(-1,-1);window.setStatusBarColor(NativeUi.DEEP);window.setNavigationBarColor(NativeUi.WINE);}
+        if(busy||destroyed||original==null||cropDialog!=null)return;Dialog dialog=new Dialog(this,android.R.style.Theme_Material_Light_NoActionBar);cropDialog=dialog;LinearLayout body=ui.column();body.setBackgroundColor(PhotoUi.BG);dialog.setContentView(body);
+        PhotoCropView frame=new PhotoCropView(this,original,crop);frame.setTag("crop:frame");TextView cancel=ui.icon("back","Cancelar recorte",()->dialog.dismiss());cancel.setTag("crop:cancel");TextView apply=ui.button("Aplicar",true,()->{crop.set(frame.crop());dialog.dismiss();requestRender();});apply.setTag("crop:apply");body.addView(ui.header("Recortar",cancel,apply));TextView hint=ui.text("Arrastra las esquinas para encuadrar.",13,PhotoUi.MUTED,false);hint.setGravity(Gravity.CENTER);hint.setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10));body.addView(hint);body.addView(frame,new LinearLayout.LayoutParams(-1,0,1));LinearLayout tools=new LinearLayout(this);tools.setPadding(ui.dp(14),ui.dp(12),ui.dp(14),ui.dp(16));ui.weighted(tools,ui.button("Acercar",false,()->frame.zoom(true)),false);ui.weighted(tools,ui.button("Alejar",false,()->frame.zoom(false)),false);ui.weighted(tools,ui.button("Foto completa",false,()->frame.reset()),true);body.addView(tools);
+        dialog.setOnDismissListener(value->{if(cropDialog==dialog)cropDialog=null;});dialog.show();Window window=dialog.getWindow();if(window!=null){window.setLayout(-1,-1);window.setStatusBarColor(PhotoUi.BG);window.setNavigationBarColor(PhotoUi.BG);}
     }
-    private void requestRender(){
-        if(busy||destroyed)return;busy=true;showOriginal=false;enabled(false);
-        progress.setText(background.equals("original")?"Ajustando la foto…":"Separando el producto y preparando el fondo…");worker.execute(()->renderPhoto());
-    }
+    private void requestRender(){if(busy||destroyed)return;busy=true;showOriginal=false;enabled(false);progress.setText(background.equals("original")?"Ajustando foto…":"Separando el fondo…");worker.execute(()->renderPhoto());}
     private void renderPhoto(){
-        final boolean selectedImprove=improve;final String selectedBackground=background;final RectF selectedCrop=new RectF(crop);
-        Bitmap working=null,before=null;
-        try{
-            engine.includeObjects(includeObjects);working=engine.render(selectedImprove,selectedBackground);
-            Bitmap next=PhotoCropView.apply(working,selectedCrop);if(next!=working)working.recycle();working=null;
-            try{before=PhotoCropView.apply(original,selectedCrop);}catch(Exception|OutOfMemoryError error){next.recycle();throw error;}
-            final Bitmap originalView=before;before=null;
-            runOnUiThread(()->{
-                if(destroyed){next.recycle();if(originalView!=original)originalView.recycle();return;}
-                Bitmap old=result,oldComparison=comparison;result=next;comparison=originalView;busy=false;display();
-                if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();enabled(true);
-                progress.setText(selectedBackground.equals("transparent")?"Producto sin fondo · revisa los bordes":selectedBackground.equals("original")?"Foto ajustada · compara con la original":"Fondo actualizado · revisa los bordes");
-            });
-        }catch(Exception|OutOfMemoryError error){
-            if(working!=null)working.recycle();if(before!=null&&before!=original)before.recycle();
-            runOnUiThread(()->{
-                if(destroyed)return;busy=false;background="original";enabled(true);
-                progress.setText(error instanceof IOException?error.getMessage():"No pudimos preparar ese fondo. Puedes conservar la foto original.");
-                Bitmap old=result,oldComparison=comparison;result=null;comparison=original;crop.set(0,0,1,1);showOriginal=true;display();
-                if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();
-                Toast.makeText(this,"Puedes elegir el fondo original y continuar.",Toast.LENGTH_LONG).show();
-            });
-        }
+        final float amount=improve?intensity/100f:0;final String selectedBackground=background;final RectF selectedCrop=new RectF(crop);Bitmap working=null,before=null;
+        try{engine.includeObjects(includeObjects);working=engine.render(amount,selectedBackground);Bitmap next=PhotoCropView.apply(working,selectedCrop);if(next!=working)working.recycle();working=null;try{before=PhotoCropView.apply(original,selectedCrop);}catch(Exception|OutOfMemoryError error){next.recycle();throw error;}final Bitmap originalView=before;before=null;
+            runOnUiThread(()->{if(destroyed){next.recycle();if(originalView!=original)originalView.recycle();return;}Bitmap old=result,oldComparison=comparison;result=next;comparison=originalView;busy=false;display();if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();enabled(true);progress.setText(selectedBackground.equals("transparent")?"Sin fondo · revisa los bordes":"");});
+        }catch(Exception|OutOfMemoryError error){if(working!=null)working.recycle();if(before!=null&&before!=original)before.recycle();runOnUiThread(()->{if(destroyed)return;busy=false;background="original";Bitmap old=result,oldComparison=comparison;result=null;comparison=original;crop.set(0,0,1,1);showOriginal=true;display();enabled(true);progress.setText("No pudimos aplicar el cambio. Conservamos la original.");if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();Toast.makeText(this,error instanceof IOException?error.getMessage():"Prueba con una foto más pequeña.",Toast.LENGTH_LONG).show();});}
     }
-    private void display(){
-        preview.setImageBitmap(showOriginal||result==null?(comparison==null?original:comparison):result);
-        save.setText(showOriginal?(PhotoCropView.isFull(crop)?"Usar foto original":"Usar original recortada"):"Usar esta foto");
-        undoCrop.setVisibility(PhotoCropView.isFull(crop)?View.GONE:View.VISIBLE);mark(options);
-    }
-    private void mark(ViewGroup group){
-        for(int i=0;i<group.getChildCount();i++){
-            View child=group.getChildAt(i);if(child instanceof ViewGroup)mark((ViewGroup)child);
-            if(child.getTag() instanceof String){String tag=(String)child.getTag();boolean selected=tag.startsWith("compare:")?tag.equals(showOriginal?"compare:original":"compare:result"):background.equals(tag);child.setSelected(selected);child.setBackground(ui.background(selected?NativeUi.GOLD:NativeUi.CARD,selected?NativeUi.WINE:NativeUi.LINE,14));}
-        }
-    }
-    private void enabled(boolean value){save.setEnabled(value);save.setAlpha(value?1:.55f);enableChildren(options,value);}
-    private void enableChildren(ViewGroup group,boolean value){for(int i=0;i<group.getChildCount();i++){View child=group.getChildAt(i);child.setEnabled(value);if(child instanceof ViewGroup)enableChildren((ViewGroup)child,value);}}
-    private void save(){
-        if(busy)return;final Bitmap chosen=showOriginal||result==null?(comparison==null?original:comparison):result;if(chosen==null)return;
-        busy=true;enabled(false);progress.setText("Guardando foto…");
-        worker.execute(()->{
-            android.util.AtomicFile file=new android.util.AtomicFile(output(this));FileOutputStream out=null;
-            try{
-                String encoded=ImageTools.encodeEdited(chosen);out=file.startWrite();out.write(encoded.getBytes("UTF-8"));file.finishWrite(out);
-                runOnUiThread(()->{if(!destroyed){setResult(RESULT_OK);finish();}});
-            }catch(Exception|OutOfMemoryError error){if(out!=null)file.failWrite(out);runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos guardar. Prueba el fondo original o una foto más pequeña.");}});}
-        });
-    }
-    @Override public void onSaveInstanceState(Bundle state){
-        super.onSaveInstanceState(state);state.putBoolean("includeObjects",includeObjects);state.putBoolean("improve",improve);state.putBoolean("showOriginal",showOriginal);state.putString("background",background);state.putFloatArray("crop",new float[]{crop.left,crop.top,crop.right,crop.bottom});
-    }
-    @Override public void onDestroy(){
-        destroyed=true;if(cropDialog!=null)cropDialog.dismiss();preview.setImageDrawable(null);
-        worker.execute(()->{if(engine!=null)engine.close();if(comparison!=null&&comparison!=original&&!comparison.isRecycled())comparison.recycle();if(original!=null&&!original.isRecycled())original.recycle();if(result!=null&&result!=original&&!result.isRecycled())result.recycle();});
-        worker.shutdown();super.onDestroy();
-    }
-    private static final class TransparencyGrid extends Drawable {
-        private final int cell;private final Paint paint=new Paint();
-        TransparencyGrid(int cell){this.cell=Math.max(1,cell);}
-        @Override public void draw(Canvas canvas){Rect bounds=getBounds();for(int y=bounds.top;y<bounds.bottom;y+=cell)for(int x=bounds.left;x<bounds.right;x+=cell){paint.setColor(((x-bounds.left)/cell+(y-bounds.top)/cell)%2==0?0xffe8e4de:0xffc9c5bf);canvas.drawRect(x,y,Math.min(x+cell,bounds.right),Math.min(y+cell,bounds.bottom),paint);}}
-        @Override public void setAlpha(int alpha){}@Override public void setColorFilter(ColorFilter filter){}@Override public int getOpacity(){return PixelFormat.OPAQUE;}
-    }
+    private void display(){preview.setBackground((showOriginal?sourceTransparent:background.equals("transparent")||sourceTransparent&&background.equals("original"))?new PhotoUi.Checker(ui.dp(10)):null);preview.setImageBitmap(showOriginal||result==null?(comparison==null?original:comparison):result);for(Map.Entry<String,TextView> entry:comparisons.entrySet()){boolean active=entry.getKey().equals(showOriginal?"original":"result");entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,0,17));entry.getValue().setTextColor(active?PhotoUi.TEXT:PhotoUi.MUTED);}undoCrop.setEnabled(!busy&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);for(Map.Entry<String,View> entry:backgrounds.entrySet()){boolean active=entry.getKey().equals(background);entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,active?PhotoUi.LIGHT:0,12));}}
+    private void enabled(boolean value){save.setEnabled(value);save.setAlpha(value?1:.4f);enableChildren(toolBody,value);if(undoCrop!=null){undoCrop.setEnabled(value&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);}for(TextView comparison:comparisons.values())comparison.setEnabled(value);View slider=findSeekBar(toolPanels.get("adjust"));if(slider!=null)slider.setEnabled(value&&improve);}
+    private View findSeekBar(View root){if(root instanceof SeekBar)return root;if(root instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)root;for(int i=0;i<group.getChildCount();i++){View found=findSeekBar(group.getChildAt(i));if(found!=null)return found;}}return null;}
+    private void enableChildren(android.view.ViewGroup group,boolean value){for(int i=0;i<group.getChildCount();i++){View child=group.getChildAt(i);child.setEnabled(value);if(child instanceof android.view.ViewGroup)enableChildren((android.view.ViewGroup)child,value);}}
+    private void save(){if(busy)return;final Bitmap chosen=result==null?(comparison==null?original:comparison):result;if(chosen==null)return;busy=true;enabled(false);progress.setText("Guardando foto…");worker.execute(()->{android.util.AtomicFile file=new CrossFile(output(this));FileOutputStream out=null;try{String encoded=ImageTools.encodeEdited(chosen);out=file.startWrite();out.write(encoded.getBytes("UTF-8"));file.finishWrite(out);runOnUiThread(()->{if(!destroyed){setResult(RESULT_OK);finish();}});}catch(Exception|OutOfMemoryError error){if(out!=null)file.failWrite(out);runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos guardar. Tu foto sigue abierta.");}});}});}
+    @Override public void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("manualSession",manualSession);state.putBoolean("includeObjects",includeObjects);state.putBoolean("improve",improve);state.putInt("intensity",intensity);state.putString("tool",tool);state.putBoolean("showOriginal",showOriginal);state.putString("background",background);state.putFloatArray("crop",new float[]{crop.left,crop.top,crop.right,crop.bottom});}
+    @Override public void onDestroy(){destroyed=true;if(cropDialog!=null)cropDialog.dismiss();preview.setImageDrawable(null);for(Bitmap swatch:swatches)swatch.recycle();worker.execute(()->{if(engine!=null)engine.close();if(comparison!=null&&comparison!=original&&!comparison.isRecycled())comparison.recycle();if(original!=null&&!original.isRecycled())original.recycle();if(result!=null&&result!=original&&!result.isRecycled())result.recycle();});worker.shutdown();super.onDestroy();}
 }

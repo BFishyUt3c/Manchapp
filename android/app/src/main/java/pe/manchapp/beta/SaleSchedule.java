@@ -15,6 +15,7 @@ final class SaleSchedule {
     static String display(String value,boolean day){long time=parse(value,day);return time<0?"Fecha por coordinar":format(day?"EEEE d 'de' MMMM 'de' yyyy":"EEE d MMM, h:mm a").format(new Date(time));}
     static String day(JSONObject s){return display(s.optString("saleDate"),true);}
     static String window(JSONObject s){return "Desde "+display(s.optString("pickupFrom"),false)+"\nHasta "+display(s.optString("pickupUntil"),false);}
+    static String shortWindow(JSONObject s){long from=parse(s.optString("pickupFrom"),false),until=parse(s.optString("pickupUntil"),false);if(from<0||until<0)return "Horario por coordinar";if(!date(from).equals(date(until)))return window(s);return "Recojo de "+format("h:mm a").format(new Date(from))+" a "+format("h:mm a").format(new Date(until));}
     static String deadline(JSONObject s){return display(s.optString("reserveUntil"),false);}
     static String invalid(JSONObject s){long day=parse(s.optString("saleDate"),true),from=parse(s.optString("pickupFrom"),false),until=parse(s.optString("pickupUntil"),false),cutoff=parse(s.optString("reserveUntil"),false);
         if(day<0||from<0||until<0||cutoff<0||!(s.opt("salesOpen") instanceof Boolean))return "Completa la fecha de venta, el plazo de reserva y el intervalo de recojo.";
@@ -26,6 +27,8 @@ final class SaleSchedule {
     static String unavailable(JSONObject s,long now){String invalid=invalid(s);if(!invalid.isEmpty())return "La olla anunciará su próxima venta.";if(!s.optBoolean("salesOpen"))return "Las reservas están pausadas.";if(now>parse(s.optString("pickupUntil"),false))return "Esta jornada de venta terminó.";if(now>=parse(s.optString("reserveUntil"),false))return "Cerraron las reservas para esta venta.";return "";}
     static void requireOpen(JSONObject s,long now)throws Exception{String error=unavailable(s,now);if(!error.isEmpty())throw new Exception(error);}
     static String key(JSONObject s){return s.optString("saleDate")+"/"+s.optString("pickupFrom")+"/"+s.optString("pickupUntil");}
+    static JSONObject forProduct(JSONObject product,JSONObject defaults){JSONObject result=new JSONObject();try{if(defaults!=null){Iterator<String> keys=defaults.keys();while(keys.hasNext()){String key=keys.next();result.put(key,defaults.get(key));}}if(product!=null)for(String key:KEYS)if(product.has(key))result.put(key,product.get(key));}catch(JSONException error){throw new IllegalStateException(error);}return result;}
+    static boolean announced(JSONObject product,JSONObject defaults,long now){if(product==null||!product.optBoolean("available")||product.optInt("stock")<=0)return false;JSONObject schedule=forProduct(product,defaults);return invalid(schedule).isEmpty()&&schedule.optBoolean("salesOpen")&&parse(schedule.optString("pickupUntil"),false)>now;}
     static JSONObject editable(JSONObject source){JSONObject draft=new JSONObject();try{for(String key:KEYS)if(source.has(key))draft.put(key,source.get(key));if(source.has("pickup"))draft.put("pickup",source.get("pickup"));}catch(JSONException error){throw new IllegalStateException(error);}return draft;}
     static JSONObject copyInto(JSONObject order,JSONObject settings)throws JSONException{for(String key:KEYS)if(settings.has(key))order.put(key,settings.get(key));order.put("pickup",settings.optString("pickup"));return order;}
     static String next(String status,boolean delivery){switch(status){case "registered":case "confirmed":case "preparing":return "sale_day";case "sale_day":return delivery?"delivering":"pickup_available";case "ready":return delivery?"delivering":"pickup_available";case "pickup_available":case "delivering":return "delivered";default:return "";}}
@@ -38,7 +41,7 @@ final class SaleSchedule {
         for(String key:KEYS)if(!s.has(key)&&defaults.has(key)){s.put(key,defaults.get(key));changed=true;}
         if(s.optString("pickup").equals("Módulo Carrió · confirmar referencia con la olla")){s.put("pickup","Olla Común Mujeres Emprendedoras · Manchay");changed=true;}
         if(s.optString("hours").equals("Almuerzos y antojitos de la tarde")){s.put("hours","Ventas en fechas programadas por la olla");changed=true;}
-        for(String array:new String[]{"products","promos"}){JSONArray all=catalog.optJSONArray(array);for(int i=0;all!=null&&i<all.length();i++)changed=upgradeItem(all.getJSONObject(i))||changed;}
+        for(String array:new String[]{"products","promos"}){JSONArray all=catalog.optJSONArray(array);for(int i=0;all!=null&&i<all.length();i++){JSONObject item=all.getJSONObject(i);changed=upgradeItem(item)||changed;if(array.equals("products"))for(String key:KEYS)if(!item.has(key)&&s.has(key)){item.put(key,s.get(key));changed=true;}}}
         JSONArray pending=catalog.optJSONArray("pending");for(int i=0;pending!=null&&i<pending.length();i++){JSONObject op=pending.getJSONObject(i);if(op.optString("type").equals("product")||op.optString("type").equals("promo"))changed=upgradeItem(op.getJSONObject("data"))||changed;}
         return changed;
     }
