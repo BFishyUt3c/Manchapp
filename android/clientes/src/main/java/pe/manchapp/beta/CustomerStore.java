@@ -84,6 +84,8 @@ final class CustomerStore {
         }catch(Exception error){state=before;throw error;}
     }
     synchronized void markProblem(String id,String message)throws Exception{JSONObject before=copy(state);try{JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++)if(orders.getJSONObject(i).optString("id").equals(id))orders.getJSONObject(i).put("sendState","review").put("syncError",message);save();}catch(Exception error){state=before;throw error;}}
+    synchronized void rejectOrder(String id,String message)throws Exception{JSONObject before=copy(state);try{JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++){JSONObject order=orders.getJSONObject(i);if(order.optString("id").equals(id))order.put("sendState","rejected").put("status","cancelled").put("syncError",message);}save();}catch(Exception error){state=before;throw error;}}
+    synchronized void markRestockRequested(String id,String requestId)throws Exception{JSONObject before=copy(state);try{JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++){JSONObject order=orders.getJSONObject(i);if(order.optString("id").equals(id))order.put("restockRequested",true).put("restockRequestId",requestId);}save();}catch(Exception error){state=before;throw error;}}
     synchronized void restoreToCart(String id)throws Exception{
         if(count()>0)throw new Exception("Vacía o termina tu carrito actual antes de revisar esta solicitud.");JSONObject before=copy(state);
         try{JSONArray orders=state.getJSONArray("orders");for(int i=0;i<orders.length();i++){

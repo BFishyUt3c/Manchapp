@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent, type InputHTMLAttributes } from 'react';
-import { ArrowLeft, ArrowRight, Check, MapPin, Minus, Plus, ShoppingBag, Truck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, MapPin, MessageCircle, Minus, Plus, ShoppingBag, Truck } from 'lucide-react';
 import type { Catalog, Product } from './types';
 
 const money = (value: number) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' }).format(value);
+const key = 'manchapp.customer.v2.checkout';
+function saved<T>(key: string, fallback: T): T { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } }
+function remember(key: string, value: unknown) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Session still works if storage is disabled. */ } }
+
 type Props = {
   catalog: Catalog;
   cart: Record<string, number>;
@@ -22,13 +26,14 @@ export function Quantity({ name, value, max, onChange }: { name: string; value: 
 
 export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, offline }: Props) {
   const [step, setStep] = useState(0);
-  const [fulfillment, setFulfillment] = useState('pickup');
-  const [zoneId, setZoneId] = useState('');
-  const [payment, setPayment] = useState('cash');
-  const [details, setDetails] = useState({ customer: '', phone: '', address: '', reference: '' });
+  const [fulfillment, setFulfillment] = useState(() => saved(key + '.fulfillment', 'pickup'));
+  const [zoneId, setZoneId] = useState(() => saved(key + '.zoneId', ''));
+  const [payment, setPayment] = useState(() => saved(key + '.payment', 'cash'));
+  const [details, setDetails] = useState(() => saved(key + '.details', { customer: '', phone: '', address: '', reference: '' }));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [errorField, setErrorField] = useState('');
+  const [showRequestMore, setShowRequestMore] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const form = useRef<HTMLFormElement>(null);
   const { settings, products } = catalog;
@@ -41,10 +46,18 @@ export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, of
   const steps = ['Comida y entrega', 'Tus datos', 'Revisar y enviar'];
 
   useEffect(() => { heading.current?.focus({ preventScroll: true }); heading.current?.scrollIntoView({ block: 'start' }); }, [step]);
-  const changeField = (name: keyof typeof details, value: string) => { setDetails(current => ({ ...current, [name]: value })); setError(''); };
+  useEffect(() => remember(key + '.details', details), [details]);
+  useEffect(() => remember(key + '.fulfillment', fulfillment), [fulfillment]);
+  useEffect(() => remember(key + '.zoneId', zoneId), [zoneId]);
+  useEffect(() => remember(key + '.payment', payment), [payment]);
+
+  const changeField = (name: keyof typeof details, value: string) => { setDetails(current => ({ ...current, [name]: value })); setError(''); setShowRequestMore(false); };
   const problem = (message: string, field?: string) => {
     setError(message);
     setErrorField(field || '');
+    if (message.toLowerCase().includes('disponibilidad') || message.toLowerCase().includes('agotado') || message.toLowerCase().includes('cambió')) {
+      setShowRequestMore(true);
+    }
     if (field) form.current?.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${field}"]`)?.focus();
   };
   const fieldHelp = (name: string) => error && errorField === name ? <span id={`error-${name}`} className="field-error" role="alert">{error}</span> : null;
@@ -68,6 +81,7 @@ export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, of
     event.preventDefault();
     if (busy) return;
     setError('');
+    setShowRequestMore(false);
     if (step === 0) { if (deliveryValid()) setStep(1); return; }
     if (step === 1) { if (contactValid()) setStep(2); return; }
     if (!valid || (fulfillment === 'delivery' && !zone)) { setStep(0); problem('Revisa la disponibilidad y el sector de entrega antes de enviar.'); return; }
@@ -81,7 +95,7 @@ export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, of
   };
 
   return <main className="checkout-page">
-    <button className="back-button" disabled={busy} onClick={() => { if (step === 0) onBack(); else { setStep(current => current - 1); setError(''); } }}><ArrowLeft size={20} />{step === 0 ? 'Volver a la comida' : 'Volver al paso anterior'}</button>
+    <button className="back-button" disabled={busy} onClick={() => { if (step === 0) onBack(); else { setStep(current => current - 1); setError(''); setShowRequestMore(false); } }}><ArrowLeft size={20} />{step === 0 ? 'Volver a la comida' : 'Volver al paso anterior'}</button>
     <p className="eyebrow">PASO {step + 1} DE 3</p>
     <h1 ref={heading} tabIndex={-1}>{steps[step]}</h1>
     <ol className="checkout-progress" aria-label="Pasos del pedido">
@@ -92,18 +106,20 @@ export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, of
         <div className="checkout-sections">
           {step === 0 && <>
             <section className="checkout-section"><h2>¿Está bien tu pedido?</h2><p className="step-help">Usa + para agregar una unidad y − para quitarla.</p>
-              {selected.map(product => <div className="checkout-item" key={product.id}>
-                <img src={product.image || `/illustrations/${product.illustration}.svg`} alt={product.name} />
-                <div><strong>{product.name}</strong><small>{money(product.price)} por unidad</small>{(!product.available || product.stock < cart[product.id]) && <small className="field-error">Quedan {product.available ? product.stock : 0}. Ajusta la cantidad.</small>}</div>
-                <Quantity name={product.name} value={cart[product.id]} max={product.available ? product.stock : 0} onChange={delta => onChange(product, delta)} />
-              </div>)}
+              <div className="checkout-items-grid">
+                {selected.map(product => <div className="checkout-item-card" key={product.id}>
+                  <img src={product.image || `/illustrations/${product.illustration}.svg`} alt={product.name} />
+                  <div className="item-info"><strong>{product.name}</strong><small>{money(product.price)} por unidad</small>{(!product.available || product.stock < cart[product.id]) && <small className="field-error">Quedan {product.available ? product.stock : 0}. Ajusta la cantidad.</small>}</div>
+                  <Quantity name={product.name} value={cart[product.id]} max={product.available ? product.stock : 0} onChange={delta => onChange(product, delta)} />
+                </div>)}
+              </div>
             </section>
             <section className="checkout-section"><h2>¿Cómo lo recibirás?</h2>{(settings.deliveryFreeFrom || 0) > 0 && <p className="delivery-promo">Envío gratis desde {money(settings.deliveryFreeFrom!)} en los sectores habilitados.</p>}<div className="choice-grid">
-              <button type="button" aria-pressed={fulfillment === 'pickup'} className={fulfillment === 'pickup' ? 'choice selected' : 'choice'} onClick={() => { setFulfillment('pickup'); setError(''); }}><MapPin size={25} /><strong>Voy a recoger</strong><small>Sin costo de entrega</small></button>
-              <button type="button" disabled={!settings.zones.some(item => item.enabled)} aria-pressed={fulfillment === 'delivery'} className={fulfillment === 'delivery' ? 'choice selected' : 'choice'} onClick={() => { setFulfillment('delivery'); setError(''); }}><Truck size={25} /><strong>Enviar a mi domicilio</strong><small>Consulta los sectores disponibles</small></button>
+              <button type="button" aria-pressed={fulfillment === 'pickup'} className={fulfillment === 'pickup' ? 'choice selected' : 'choice'} onClick={() => { setFulfillment('pickup'); setError(''); setShowRequestMore(false); }}><div className="choice-icon"><MapPin size={22} /></div><div><strong>Voy a recoger</strong><small>Sin costo de entrega</small></div></button>
+              <button type="button" disabled={!settings.zones.some(item => item.enabled)} aria-pressed={fulfillment === 'delivery'} className={fulfillment === 'delivery' ? 'choice selected' : 'choice'} onClick={() => { setFulfillment('delivery'); setError(''); setShowRequestMore(false); }}><div className="choice-icon"><Truck size={22} /></div><div><strong>Enviar a mi domicilio</strong><small>Consulta los sectores disponibles</small></div></button>
             </div>
               {fulfillment === 'pickup' ? <div className="pickup-note"><MapPin size={21} /><p>{settings.pickup}<small>Espera la confirmación antes de acercarte.</small></p></div> : <div className="form-stack">
-                <div className="checkout-field"><label htmlFor="order-zone">¿En qué sector estás?</label><select id="order-zone" name="zone" required {...fieldAccessibility('zone')} value={zoneId} onChange={event => { setZoneId(event.target.value); setError(''); }}><option value="">Elige tu sector</option>{settings.zones.filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.fee)}</option>)}</select>{fieldHelp('zone')}</div>
+                <div className="checkout-field"><label htmlFor="order-zone">¿En qué sector estás?</label><select id="order-zone" name="zone" required {...fieldAccessibility('zone')} value={zoneId} onChange={event => { setZoneId(event.target.value); setError(''); setShowRequestMore(false); }}><option value="">Elige tu sector</option>{settings.zones.filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.fee)}</option>)}</select>{fieldHelp('zone')}</div>
                 {zone && <p className="help-text">{zone.note}</p>}
                 {inputField('address', 'Dirección o punto de encuentro', 'Ejemplo: pasaje Las Flores, casa 12', { maxLength: 240, autoComplete: 'street-address' })}
                 {inputField('reference', 'Una referencia para encontrarte', 'Ejemplo: frente a la bodega, al pie de las escaleras', { maxLength: 240 })}
@@ -117,7 +133,7 @@ export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, of
               {inputField('customer', 'Tu nombre', 'Escribe tu nombre', { maxLength: 80, autoComplete: 'given-name' })}
               {inputField('phone', 'Tu celular', '9 números, empieza con 9', { inputMode: 'tel', type: 'tel', maxLength: 9, autoComplete: 'tel-national' })}
             </div></section>
-            <section className="checkout-section"><h2>¿Cómo pagarás?</h2><div className="payment-options">{[['cash', 'Efectivo'], ['yape', 'Yape'], ['plin', 'Plin']].map(([id, label]) => <button type="button" key={id} aria-pressed={payment === id} className={payment === id ? 'selected' : ''} onClick={() => setPayment(id)}>{payment === id && <Check size={19} />}{label}</button>)}</div><p className="help-text">Elegir una opción no realiza ningún cobro. Espera que la olla confirme tu pedido antes de pagar.</p></section>
+            <section className="checkout-section"><h2>¿Cómo pagarás?</h2><div className="payment-options">{[['cash', 'Efectivo'], ['yape', 'Yape'], ['plin', 'Plin']].map(([id, label]) => <button type="button" key={id} aria-pressed={payment === id} className={payment === id ? 'selected' : ''} onClick={() => { setPayment(id); setShowRequestMore(false); }}>{payment === id && <Check size={19} />}{label}</button>)}</div><p className="help-text">Elegir una opción no realiza ningún cobro. Espera que la olla confirme tu pedido antes de pagar.</p></section>
           </>}
           {step === 2 && <section className="checkout-section review-order"><h2>Revisa antes de enviar</h2><p className="step-help">Todavía puedes volver y cambiar los datos.</p>
             {selected.map(product => <div className="summary-line" key={product.id}><span>{cart[product.id]} × {product.name}</span><strong>{money(product.price * cart[product.id])}</strong></div>)}
@@ -128,6 +144,7 @@ export default function Checkout({ catalog, cart, onChange, onBack, onSubmit, of
         <aside className="checkout-summary"><div className="aside-card"><h2>Total de tu pedido</h2><div className="summary-line"><span>Comida</span><strong>{money(subtotal)}</strong></div><div className="summary-line"><span>Entrega</span><strong>{fulfillment === 'pickup' ? 'Recojo sin costo' : zone ? freeDelivery ? 'Gratis por promoción' : money(zone.fee) : 'Elige un sector'}</strong></div><div className="summary-line total"><span>Total</span><strong>{fulfillment === 'delivery' && !zone ? 'Por calcular' : money(total)}</strong></div>
           {offline && <p className="field-error" role="status">Sin conexión. Puedes revisar tu pedido y enviarlo cuando vuelva.</p>}
           {error && !errorField && <p className="field-error" role="alert">{error}</p>}
+          {showRequestMore && settings.phone && <a href={`https://wa.me/51${settings.phone}?text=${encodeURIComponent('Hola, se agotaron algunos productos. ¿Es posible solicitar más ventas o agregar otros? Gracias.')}`} target="_blank" rel="noreferrer" className="secondary full" style={{ marginTop: '10px', background: '#eef6ee', borderColor: '#d1e6d1', color: '#278b54' }}><MessageCircle size={19} /> Solicitar más ventas</a>}
           <button className="primary full" type="submit" disabled={busy || (step === 2 && offline)}>{busy ? 'Enviando tu pedido…' : step === 0 ? 'Continuar con mis datos' : step === 1 ? 'Revisar mi pedido' : 'Enviar mi pedido'}<ArrowRight size={20} /></button>
           <p className="help-text">{step === 2 ? 'Tus datos se usarán para coordinar la atención.' : 'Continuar todavía no envía el pedido.'}</p>
         </div></aside>

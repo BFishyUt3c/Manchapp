@@ -11,5 +11,6 @@ final class DeviceBridgeClient {
     static JSONObject catalog(Context context)throws Exception{try(InputStream in=context.getContentResolver().openInputStream(CATALOG)){if(in==null)throw new Exception("Instala también ManchApp Emprendedora en este celular.");return new JSONObject(SafeJson.read(in));}}
     static JSONObject placeOrder(Context context,JSONObject order)throws Exception{Bundle extras=new Bundle();extras.putString("json",order.toString());return result(context.getContentResolver().call(CATALOG,"placeOrder","",extras));}
     static JSONObject order(Context context,String id)throws Exception{return result(context.getContentResolver().call(CATALOG,"order",id,null));}
+    static JSONObject requestMore(Context context,JSONObject request)throws Exception{Bundle extras=new Bundle();extras.putString("json",request.toString());return result(context.getContentResolver().call(CATALOG,"requestMore","",extras));}
     private static JSONObject result(Bundle bundle)throws Exception{if(bundle==null)throw new Exception("Instala también ManchApp Emprendedora en este celular.");if(!bundle.getBoolean("ok"))throw new Exception(bundle.getString("error","No pudimos intercambiar los datos."));return new JSONObject(bundle.getString("json","{}"));}
 }
