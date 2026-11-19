@@ -4,9 +4,11 @@ import android.app.AlertDialog;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.TextView;
 import org.json.*;
 import java.util.*;
 
@@ -22,33 +24,94 @@ final class ComboEditorScreen {
 
     static void chooseComboProducts(AppShell shell) {
         JSONArray products = shell.data().optJSONArray("products");
-        ArrayList<String> ids = new ArrayList<>(), names = new ArrayList<>();
+        ArrayList<JSONObject> commercial = new ArrayList<>();
         for (int i = 0; products != null && i < products.length(); i++) {
             JSONObject p = products.optJSONObject(i);
-            if (p.optString("line").equals("commercial") && !p.optString("category").equals("Combos")) {
-                ids.add(p.optString("id"));
-                names.add(p.optString("name"));
+            if (p != null && p.optString("line").equals("commercial") && !p.optString("category").equals("Combos")) {
+                commercial.add(p);
             }
         }
-        if (ids.isEmpty()) {
+        if (commercial.isEmpty()) {
             shell.toast("Primero agrega productos individuales o usa '+ Producto rápido'.");
             return;
         }
-        boolean[] checked = new boolean[ids.size()];
-        for (int i = 0; i < ids.size(); i++) {
-            if (shell.comboIds.contains(ids.get(i))) checked[i] = true;
-        }
-        new AlertDialog.Builder(shell.activity())
-                .setTitle("Elige los productos del combo")
-                .setMultiChoiceItems(names.toArray(new String[0]), checked, (d, index, on) -> {
-                    if (on) {
-                        if (!shell.comboIds.contains(ids.get(index))) shell.comboIds.add(ids.get(index));
+
+        ArrayList<String> chosen = new ArrayList<>(shell.comboIds);
+        MainActivity activity = shell.activity();
+        LinearLayout root = shell.column();
+        root.setBackgroundColor(NativeUi.BG);
+        root.setPadding(shell.dp(18), shell.dp(14), shell.dp(18), shell.dp(10));
+
+        TextView counter = shell.text("Elegidos: " + chosen.size(), 13, NativeUi.WINE, true);
+        root.addView(counter);
+
+        EditText search = new EditText(activity);
+        search.setHint("Buscar producto por nombre...");
+        search.setSingleLine(true);
+        search.setTextSize(16);
+        search.setTypeface(shell.regular());
+        search.setTextColor(NativeUi.INK);
+        search.setHintTextColor(NativeUi.MUTED);
+        search.setPadding(shell.dp(13), shell.dp(11), shell.dp(13), shell.dp(11));
+        search.setBackground(shell.bg(NativeUi.CARD, NativeUi.LINE, 12));
+        search.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        shell.add(root, search, 10);
+
+        ScrollView listScroll = new ScrollView(activity);
+        LinearLayout listContainer = shell.column();
+        listScroll.addView(listContainer);
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, shell.dp(300));
+        scrollLp.topMargin = shell.dp(10);
+        root.addView(listScroll, scrollLp);
+
+        Runnable renderList = () -> {
+            listContainer.removeAllViews();
+            String query = search.getText().toString().trim().toLowerCase(Locale.ROOT);
+            int shown = 0;
+            for (JSONObject p : commercial) {
+                String name = p.optString("name");
+                if (!query.isEmpty() && !name.toLowerCase(Locale.ROOT).contains(query)) continue;
+                shown++;
+                String id = p.optString("id");
+                CheckBox box = new CheckBox(activity);
+                box.setText(name + " · " + shell.cash(p.optDouble("price")));
+                box.setTextSize(15);
+                box.setTextColor(NativeUi.INK);
+                box.setTypeface(shell.regular());
+                box.setPadding(shell.dp(6), shell.dp(10), shell.dp(6), shell.dp(10));
+                box.setChecked(chosen.contains(id));
+                box.setOnCheckedChangeListener((btn, isChecked) -> {
+                    if (isChecked) {
+                        if (!chosen.contains(id)) chosen.add(id);
                     } else {
-                        shell.comboIds.remove(ids.get(index));
+                        chosen.remove(id);
                     }
-                })
-                .setPositiveButton("Aceptar", (d, w) -> shell.render())
+                    counter.setText("Elegidos: " + chosen.size());
+                });
+                shell.add(listContainer, box, 4);
+            }
+            if (shown == 0) {
+                shell.add(listContainer, shell.text("No hay productos que coincidan con \"" + query + "\".",
+                        14, NativeUi.MUTED, false), 12);
+            }
+        };
+
+        renderList.run();
+        search.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(Editable s) { renderList.run(); }
+        });
+
+        new AlertDialog.Builder(activity)
+                .setTitle("Elige los productos del combo")
+                .setView(root)
                 .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Aceptar", (d, w) -> {
+                    shell.comboIds.clear();
+                    shell.comboIds.addAll(chosen);
+                    shell.render();
+                })
                 .show();
     }
 
@@ -67,8 +130,44 @@ final class ComboEditorScreen {
             shell.setComboDraft(combo);
         }
         final JSONObject draft = combo;
-        shell.title("Crear un combo", "Combina varios productos con un precio especial.");
         LinearLayout content = shell.content();
+        NativeUi ui = shell.ui();
+
+        shell.title("Crear un combo", "Combina varios productos con un precio especial.");
+
+        // 1. Bloque de productos incluidos en tarjeta limpia
+        LinearLayout productsCard = shell.card();
+        shell.add(productsCard, shell.text("PRODUCTOS DEL COMBO", 11, NativeUi.MUTED, true), 0);
+
+        StringBuilder summary = new StringBuilder();
+        double individualTotal = 0;
+        JSONObject baseSchedule = null;
+        for (String id : shell.comboIds) {
+            JSONObject p = shell.find("products", id);
+            if (p != null) {
+                if (summary.length() > 0) summary.append(" + ");
+                summary.append(p.optString("name"));
+                individualTotal += p.optDouble("price", 0);
+                if (baseSchedule == null) baseSchedule = SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"));
+            }
+        }
+
+        if (summary.length() > 0) {
+            shell.add(productsCard, shell.text(summary.toString(), 16, NativeUi.INK, true), 6);
+            shell.add(productsCard, shell.text("Por separado suman " + shell.cash(individualTotal),
+                    13, NativeUi.WINE, true), 4);
+        } else {
+            shell.add(productsCard, shell.text("Aún no eliges productos. Toca 'Elegir productos' para armar este combo.",
+                    13, NativeUi.MUTED, false), 6);
+        }
+
+        shell.pair(productsCard,
+                "Elegir productos (" + shell.comboIds.size() + ")", () -> chooseComboProducts(shell),
+                "+ Producto rápido", () -> createInlineProduct(shell));
+        shell.add(content, productsCard, 14);
+
+        // 2. Datos del combo
+        shell.add(content, ui.heading("Datos del combo", 19), 20);
 
         String[] presets = {"Combo merienda", "Combo familiar", "Antojo de la tarde"};
         int selectedPreset = draft.optInt("preset", 0);
@@ -78,29 +177,12 @@ final class ComboEditorScreen {
             shell.render();
         });
 
-        shell.pair(content, "Elegir productos (" + shell.comboIds.size() + ")", () -> chooseComboProducts(shell),
-                "+ Producto rápido", () -> createInlineProduct(shell));
-
-        StringBuilder summary = new StringBuilder();
-        JSONObject baseSchedule = null;
-        for (String id : shell.comboIds) {
-            JSONObject p = shell.find("products", id);
-            if (p != null) {
-                if (summary.length() > 0) summary.append(" + ");
-                summary.append(p.optString("name"));
-                if (baseSchedule == null) baseSchedule = SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"));
-            }
-        }
-        if (summary.length() > 0) {
-            shell.add(content, shell.ui().message("Incluye:", summary.toString(), NativeUi.GOLD), 12);
-        } else {
-            shell.add(content, shell.ui().message("Sin productos aún", "Toca 'Elegir productos' para armar este combo.", NativeUi.SOFT), 12);
-        }
-
         bind(draft, "name", shell.field("name", "Nombre del combo", draft.optString("name"), "Ej: Combo familiar", false));
         bind(draft, "description", shell.field("description", "Detalle del contenido", draft.optString("description"), "Ej: 3 cachangas + 2 cafés", false));
         bind(draft, "price", shell.field("price", "Precio del combo (S/)", draft.optString("price"), "Ej: 15.00", true));
-        bind(draft, "stock", shell.field("stock", "¿Cuántos combos ofrecerás?", draft.optString("stock"), "Ej: 10", true));
+        EditText stockField = shell.field("stock", "¿Cuántos combos ofrecerás?", draft.optString("stock"), "Ej: 10", true);
+        stockField.setInputType(InputType.TYPE_CLASS_NUMBER);
+        bind(draft, "stock", stockField);
 
         final JSONObject finalSchedule = baseSchedule;
         shell.primary("Guardar combo", () -> {
@@ -159,6 +241,7 @@ final class ComboEditorScreen {
                 shell.toast("Revisa los datos y asegúrate de elegir productos.");
             }
         });
+        shell.note("Se guarda en este celular aunque no tengas internet.");
     }
 
     private static void bind(JSONObject combo, String key, EditText field) {

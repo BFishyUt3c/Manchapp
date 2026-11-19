@@ -34,12 +34,18 @@ final class ProductScreen {
         shell.add(content, actionsRow, 18);
 
         if (hasDraft(shell)) {
-            shell.menu("Continuar con mi borrador",
-                    shell.draft().optString("name").isEmpty() ? "Producto todavía sin nombre" : shell.draft().optString("name"),
+            shell.menu("Continuar borrador de producto",
+                    shell.draft().optString("name").isEmpty() ? "Producto nuevo sin nombre" : shell.draft().optString("name"),
                     "edit", () -> {
                         shell.pickedImage(shell.draft().optString("image"));
-                        shell.go("edit", shell.draft().optString("id"));
+                        shell.go("edit", "");
                     });
+        }
+        if (hasComboDraft(shell)) {
+            String comboName = shell.comboDraft() != null ? shell.comboDraft().optString("name") : "";
+            shell.menu("Continuar borrador de combo",
+                    comboName.isEmpty() ? "Combo nuevo en progreso" : comboName,
+                    "tag", () -> shell.go("promo", ""));
         }
 
         shell.segmented(new String[]{"Todos", "Productos", "Combos"}, catalogFilter, index -> {
@@ -59,7 +65,7 @@ final class ProductScreen {
 
             LinearLayout c = shell.card();
             if (combo) {
-                c.setBackground(shell.bg(0xfffdf6e7, NativeUi.GOLD, 16));
+                c.setBackground(shell.bg(NativeUi.CARD, NativeUi.GOLD, 16));
             }
             LinearLayout row = new LinearLayout(activity);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -67,14 +73,15 @@ final class ProductScreen {
 
             LinearLayout info = shell.column();
             info.setPadding(shell.dp(14), 0, 0, 0);
-            if (combo) {
-                TextView badge = ui.chip("COMBO", NativeUi.WINE, NativeUi.GOLD);
-                badge.setTextSize(11);
-                badge.setPadding(shell.dp(8), shell.dp(2), shell.dp(8), shell.dp(2));
-                LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(-2, -2);
-                badgeLp.bottomMargin = shell.dp(4);
-                info.addView(badge, badgeLp);
-            }
+            TextView badge = combo
+                    ? ui.chip("COMBO", NativeUi.WINE, NativeUi.GOLD)
+                    : ui.chip("PRODUCTO", NativeUi.INK, NativeUi.SOFT);
+            badge.setTextSize(11);
+            badge.setPadding(shell.dp(8), shell.dp(2), shell.dp(8), shell.dp(2));
+            LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(-2, -2);
+            badgeLp.bottomMargin = shell.dp(4);
+            info.addView(badge, badgeLp);
+
             info.addView(shell.text(p.optString("name"), 18, NativeUi.INK, true));
             shell.add(info, shell.text(shell.cash(p.optDouble("price")) + " " + unit(p), 18, NativeUi.WINE, true), 4);
             boolean available = p.optBoolean("available") && p.optInt("stock") > 0;
@@ -128,7 +135,6 @@ final class ProductScreen {
         boolean available = p.optBoolean("available") && p.optInt("stock") > 0;
         JSONObject schedule = SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"));
 
-        // Foto principal
         ImageView photo = image(shell, p, 320, true);
         photo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         photo.setPadding(shell.dp(6), shell.dp(6), shell.dp(6), shell.dp(6));
@@ -138,15 +144,15 @@ final class ProductScreen {
             shell.add(content, shell.text("ILUSTRACIÓN REFERENCIAL", 11, NativeUi.MUTED, true), 6);
         }
 
-        // Encabezado con etiqueta de estado / tipo
         LinearLayout badges = new LinearLayout(activity);
-        if (combo) {
-            TextView comboBadge = ui.chip("COMBO", NativeUi.WINE, NativeUi.GOLD);
-            comboBadge.setTextSize(11);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-            lp.rightMargin = shell.dp(8);
-            badges.addView(comboBadge, lp);
-        }
+        TextView typeBadge = combo
+                ? ui.chip("COMBO", NativeUi.WINE, NativeUi.GOLD)
+                : ui.chip("PRODUCTO", NativeUi.INK, NativeUi.SOFT);
+        typeBadge.setTextSize(11);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.rightMargin = shell.dp(8);
+        badges.addView(typeBadge, lp);
+
         TextView stateBadge = ui.chip(
                 available ? "Disponible" : (p.optBoolean("available") ? "Sin cupos" : "En pausa"),
                 available ? NativeUi.GREEN : NativeUi.MUTED,
@@ -159,7 +165,6 @@ final class ProductScreen {
         shell.add(content, ui.heading(p.optString("name"), 26), 8);
         shell.add(content, shell.text(shell.cash(p.optDouble("price")) + " " + unit(p), 22, NativeUi.WINE, true), 4);
 
-        // Tarjeta de información y ajuste rápido de cupos
         LinearLayout details = shell.card();
         shell.add(details, shell.text("PRÓXIMA VENTA", 11, NativeUi.MUTED, true), 0);
         shell.add(details, shell.text(SaleSchedule.day(schedule), 16, NativeUi.INK, true), 3);
@@ -200,7 +205,6 @@ final class ProductScreen {
 
         shell.add(content, details, 16);
 
-        // Acciones agrupadas en 1 fila
         shell.pair(content,
                 combo ? "Editar combo" : "Editar producto",
                 () -> {
@@ -214,7 +218,6 @@ final class ProductScreen {
                     shell.enqueue("product", change, "products");
                 });
 
-        // Eliminar separado al final
         shell.add(content, shell.button(combo ? "Eliminar combo" : "Eliminar producto", false, () ->
                 new AlertDialog.Builder(activity)
                         .setTitle("¿Eliminar " + p.optString("name") + "?")
@@ -232,7 +235,6 @@ final class ProductScreen {
                             }
                         }).show()), 10);
 
-        // Acción principal fija abajo
         shell.primary("Crear publicación", () -> {
             shell.publicationMessage(p.optString("description"));
             shell.go("publish", shell.currentId());
@@ -266,15 +268,15 @@ final class ProductScreen {
 
     static void startEditor(AppShell shell, JSONObject product) {
         MainActivity activity = shell.activity();
-        if (hasDraft(shell) && (product == null || !shell.draft().optString("id").equals(product.optString("id")))) {
+        if (product == null && hasDraft(shell)) {
             new AlertDialog.Builder(activity)
                     .setTitle("Tienes un borrador pendiente")
                     .setMessage((shell.draft().optString("name").isEmpty() ? "Producto sin nombre" : shell.draft().optString("name")) + "\nPuedes seguir completándolo o empezar otro producto.")
                     .setNegativeButton("Volver", null)
-                    .setNeutralButton("Empezar otro", (d, w) -> openEditor(shell, product))
+                    .setNeutralButton("Empezar otro", (d, w) -> openEditor(shell, null))
                     .setPositiveButton("Continuar borrador", (d, w) -> {
                         shell.pickedImage(shell.draft().optString("image"));
-                        shell.go("edit", shell.draft().optString("id"));
+                        shell.go("edit", "");
                     }).show();
             return;
         }
@@ -292,7 +294,17 @@ final class ProductScreen {
 
     static boolean hasDraft(AppShell shell) {
         JSONObject draft = shell.draft();
-        return draft != null && draft.optString("line", "commercial").equals("commercial")
+        return draft != null
+                && draft.optString("id").isEmpty()
+                && draft.optString("line", "commercial").equals("commercial")
                 && (!draft.optString("name").isEmpty() || !draft.optString("image").isEmpty() || !draft.optString("price").isEmpty());
+    }
+
+    static boolean hasComboDraft(AppShell shell) {
+        JSONObject combo = shell.comboDraft();
+        return !shell.comboIds.isEmpty() || (combo != null && (
+                !combo.optString("description").isEmpty()
+                        || !combo.optString("price").isEmpty()
+                        || !combo.optString("stock").isEmpty()));
     }
 }

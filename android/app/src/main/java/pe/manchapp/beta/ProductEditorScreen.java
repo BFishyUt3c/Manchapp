@@ -109,9 +109,18 @@ final class ProductEditorScreen {
         shell.setCategorySpinner(null);
         shell.setAvailability(null);
 
-        shell.title(shell.currentId().isEmpty() ? "Agregar producto" : "Editar producto",
-                "Foto, precio y cupos en un solo paso.");
+        boolean isNew = shell.currentId().isEmpty();
+        boolean isCombo = "Combos".equalsIgnoreCase(draft.optString("category"))
+                || "combo".equalsIgnoreCase(draft.optString("saleUnit"));
 
+        shell.title(
+                isNew ? "Agregar producto" : (isCombo ? "Editar combo" : "Editar producto"),
+                "Foto, categoría, precio y cupos en un solo paso."
+        );
+
+        // 1. Bloque de foto en tarjeta limpia
+        LinearLayout photoCard = shell.card();
+        shell.add(photoCard, shell.text("FOTO DEL PRODUCTO", 11, NativeUi.MUTED, true), 0);
         if (!shell.pickedImage().isEmpty() || ImageTools.hasProductPhoto(draft)) {
             JSONObject photoSource = draft;
             if (!shell.pickedImage().isEmpty()) {
@@ -122,18 +131,18 @@ final class ProductEditorScreen {
             photoPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);
             photoPreview.setPadding(shell.dp(6), shell.dp(6), shell.dp(6), shell.dp(6));
             photoPreview.setContentDescription("Vista previa completa de la foto del producto");
-            shell.add(content, photoPreview, 14);
-            photoPreview.getLayoutParams().height = shell.dp(200);
-            shell.add(content, ui.button("Recortar y mejorar foto", false, "edit", () -> improvePhoto(shell)), 10);
+            shell.add(photoCard, photoPreview, 10);
+            photoPreview.getLayoutParams().height = shell.dp(190);
+            shell.add(photoCard, ui.button("Recortar y mejorar foto", false, "edit", () -> improvePhoto(shell)), 10);
         } else {
-            shell.add(content, ui.message("Puedes empezar por la foto",
-                    "La foto es opcional. Puedes elegirla o usar una ilustración.", NativeUi.GOLD), 14);
+            shell.add(photoCard, shell.text("Opcional: toma una foto, elige de tu galería o usa una ilustración.",
+                    13, NativeUi.MUTED, false), 6);
         }
-        shell.pair(content, "Tomar foto", () -> shell.choosePhoto("product", true),
+        shell.pair(photoCard, "Tomar foto", () -> shell.choosePhoto("product", true),
                 "Elegir foto", () -> shell.choosePhoto("product", false));
-        shell.add(content, shell.button("Elegir una ilustración", false, () -> imageBank(shell)), 8);
+        shell.add(photoCard, shell.button("Elegir una ilustración", false, () -> imageBank(shell)), 8);
         if (PhotoOriginals.has(activity, draft.optString("id"))) {
-            shell.add(content, shell.button("Recuperar foto original", false, () -> {
+            shell.add(photoCard, shell.button("Recuperar foto original", false, () -> {
                 try {
                     String original = PhotoOriginals.read(activity, shell.draft().optString("id"));
                     shell.pickedImage(original);
@@ -146,10 +155,26 @@ final class ProductEditorScreen {
                 }
             }), 8);
         }
+        shell.add(content, photoCard, 14);
+
+        // 2. Datos principales (incluyendo categoría visible)
+        shell.add(content, ui.heading("Datos principales", 19), 20);
 
         shell.field("name", "¿Qué vas a ofrecer?", draft.optString("name"), "Ejemplo: Papa rellena", false);
+
+        String[] categories = {"Salados", "Antojitos", "Postres", "Bebidas", "Combos"};
+        int catIndex = Arrays.asList(categories).indexOf(draft.optString("category"));
+        TextView categoryLabel = shell.text("Categoría", 15, NativeUi.INK, true);
+        shell.add(content, categoryLabel, 14);
+        Spinner categorySpinner = shell.spinner(categories, Math.max(0, catIndex));
+        categorySpinner.setId(View.generateViewId());
+        categoryLabel.setLabelFor(categorySpinner.getId());
+        shell.setCategorySpinner(categorySpinner);
+        shell.add(content, categorySpinner, 6);
+
         shell.field("price", "Precio de venta (S/)", draft.optString("price"), "Ejemplo: 6.50", true);
-        shell.add(content, shell.text("¿Qué recibe por ese precio?", 15, NativeUi.INK, true), 15);
+
+        shell.add(content, shell.text("¿Qué recibe por ese precio?", 15, NativeUi.INK, true), 14);
         String[] unitCodes = {"unit", "portion", "combo", "cup"};
         Spinner unitSpinner = shell.spinner(
                 new String[]{"Una unidad", "Una porción", "Un combo", "Una taza"},
@@ -158,30 +183,24 @@ final class ProductEditorScreen {
         unitSpinner.setContentDescription("Presentación del producto");
         shell.setUnitSpinner(unitSpinner);
         shell.add(content, unitSpinner, 6);
-        shell.field("stock", "¿Cuántas unidades ofrecerás?", draft.optString("stock"),
+
+        shell.field("stock", "¿Cuántos cupos ofrecerás?", draft.optString("stock"),
                 "Ejemplo: 20", true).setInputType(InputType.TYPE_CLASS_NUMBER);
         shell.field("description", "Descripción para el cliente", draft.optString("description"),
                 "Ejemplo: Papa doradita con relleno y salsa criolla", false);
 
-        shell.add(content, shell.button(shell.editorMore() ? "Ocultar opciones adicionales" : "Más opciones (categoría, porción, notas)", false, () -> {
+        // 3. Opciones adicionales (solo lo verdaderamente opcional)
+        shell.add(content, shell.button(shell.editorMore() ? "Ocultar opciones adicionales" : "Más opciones (porción, notas, estado)", false, () -> {
             captureEditor(shell);
             shell.editorMore(!shell.editorMore());
             shell.render();
-        }), 14);
+        }), 16);
+
         if (shell.editorMore()) {
             shell.field("portion", "Porción o contenido (opcional)", draft.optString("portion"),
-                    "Ejemplo: una papa con salsa criolla", false);
+                    "Ejemplo: Una papa con salsa criolla", false);
             shell.field("extraText", "Notas adicionales (opcional)", draft.optString("extraText"),
                     "Ejemplo: Solo para recojo en la olla", false);
-            String[] categories = {"Salados", "Antojitos", "Postres", "Bebidas", "Combos"};
-            int index = Arrays.asList(categories).indexOf(draft.optString("category"));
-            TextView categoryLabel = shell.text("Tipo de producto", 15, NativeUi.INK, true);
-            shell.add(content, categoryLabel, 16);
-            Spinner categorySpinner = shell.spinner(categories, Math.max(0, index));
-            categorySpinner.setId(View.generateViewId());
-            categoryLabel.setLabelFor(categorySpinner.getId());
-            shell.setCategorySpinner(categorySpinner);
-            shell.add(content, categorySpinner, 6);
             Switch availability = new Switch(activity);
             availability.setText("Disponible para ofrecer");
             availability.setTextColor(NativeUi.INK);
@@ -195,20 +214,22 @@ final class ProductEditorScreen {
                     SaleSchedule.day(SaleSchedule.forProduct(draft, shell.data().optJSONObject("settings")))
                             + "\nCambia la fecha desde Inicio → Programar una venta.", NativeUi.GOLD), 12);
         }
-        shell.primary("Guardar producto", () -> {
+
+        shell.primary(isNew ? "Guardar producto" : "Guardar cambios", () -> {
             if (shell.syncing()) {
                 shell.toast("Espera un momento mientras actualizamos.");
                 return;
             }
             JSONObject value = editorDraft(shell);
             if (value == null) return;
-            String detail = value.optString("name") + "\n" + shell.cash(value.optDouble("price")) + " "
-                    + ProductScreen.unit(value) + "\n" + value.optInt("stock") + " unidades";
+            String detail = value.optString("name") + " (" + value.optString("category") + ")\n"
+                    + shell.cash(value.optDouble("price")) + " " + ProductScreen.unit(value)
+                    + "\n" + value.optInt("stock") + " cupos";
             new AlertDialog.Builder(activity)
-                    .setTitle("¿Guardar este producto?")
+                    .setTitle(isNew ? "¿Guardar este producto?" : "¿Guardar cambios?")
                     .setMessage(detail)
                     .setNegativeButton("Seguir editando", null)
-                    .setPositiveButton("Guardar producto", (d, w) -> {
+                    .setPositiveButton("Guardar", (d, w) -> {
                         String sourcePhoto = value.optString("_sourcePhoto");
                         String compositionId = compositionFor(shell, value);
                         value.remove("_sourcePhoto");
