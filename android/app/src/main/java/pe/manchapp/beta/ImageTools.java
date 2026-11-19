@@ -66,7 +66,7 @@ final class ImageTools {
     static Bitmap decodeFile(File file,int edge)throws IOException{
         BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;BitmapFactory.decodeFile(file.getAbsolutePath(),bounds);
         if(bounds.outWidth<=0||bounds.outHeight<=0)throw new IOException("Vuelve a elegir la foto.");
-        BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,edge);
+        BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,edge);options.inPreferredConfig=Bitmap.Config.ARGB_8888;
         Bitmap bitmap=BitmapFactory.decodeFile(file.getAbsolutePath(),options);
         if(bitmap==null)throw new IOException("Vuelve a elegir la foto.");
         Bitmap limited=limit(bitmap,edge);
@@ -81,7 +81,8 @@ final class ImageTools {
         if(!transform.isIdentity()){Bitmap rotated=Bitmap.createBitmap(bitmap,0,0,bitmap.getWidth(),bitmap.getHeight(),transform,true);if(rotated!=bitmap)bitmap.recycle();bitmap=rotated;}
         float scale=Math.min(1f,960f/Math.max(bitmap.getWidth(),bitmap.getHeight()));if(scale<1){Bitmap resized=Bitmap.createScaledBitmap(bitmap,Math.max(1,Math.round(bitmap.getWidth()*scale)),Math.max(1,Math.round(bitmap.getHeight()*scale)),true);if(resized!=bitmap)bitmap.recycle();bitmap=resized;}return bitmap;
     }
-    static String encode(Bitmap bitmap)throws IOException{ByteArrayOutputStream output=new ByteArrayOutputStream();bitmap.compress(Bitmap.CompressFormat.JPEG,82,output);if(output.size()>600000){output.reset();bitmap.compress(Bitmap.CompressFormat.JPEG,65,output);}if(output.size()>600000)throw new IOException("Prueba una foto de menor tamaño.");return "data:image/jpeg;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);}
+    static String encode(Bitmap bitmap)throws IOException{return encode(bitmap,600000);}
+    static String encode(Bitmap bitmap,int limit)throws IOException{ByteArrayOutputStream output=new ByteArrayOutputStream();bitmap.compress(Bitmap.CompressFormat.JPEG,82,output);if(output.size()>limit){output.reset();bitmap.compress(Bitmap.CompressFormat.JPEG,65,output);}if(output.size()>limit)throw new IOException("Prueba una foto de menor tamaño.");return "data:image/jpeg;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);}
     static boolean hasTransparency(Bitmap bitmap){
         if(!bitmap.hasAlpha())return false;
         int[] row=new int[bitmap.getWidth()];
@@ -90,12 +91,12 @@ final class ImageTools {
     }
     /** JPEG for opaque photos, bounded PNG for a real transparent cutout. */
     static String encodeEdited(Bitmap bitmap)throws IOException{
-        if(!hasTransparency(bitmap))return encode(bitmap);
+        if(!hasTransparency(bitmap))return encode(bitmap,1200000);
         Bitmap current=bitmap;ByteArrayOutputStream output=new ByteArrayOutputStream();
         try{
             while(true){
                 output.reset();if(!current.compress(Bitmap.CompressFormat.PNG,100,output))throw new IOException("No pudimos guardar la foto.");
-                if(output.size()<=600000)return "data:image/png;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);
+                if(output.size()<=1200000)return "data:image/png;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);
                 if(Math.max(current.getWidth(),current.getHeight())<=128)throw new IOException("Prueba un encuadre más pequeño.");
                 Bitmap smaller=Bitmap.createScaledBitmap(current,Math.max(1,Math.round(current.getWidth()*.8f)),Math.max(1,Math.round(current.getHeight()*.8f)),true);
                 if(current!=bitmap)current.recycle();current=smaller;

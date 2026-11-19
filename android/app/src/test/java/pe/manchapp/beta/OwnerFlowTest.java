@@ -24,18 +24,17 @@ public class OwnerFlowTest {
     private static Object field(Object target,String name)throws Exception{Field value=target.getClass().getDeclaredField(name);value.setAccessible(true);return value.get(target);}
     private void shot(View view,String name)throws Exception{view.measure(View.MeasureSpec.makeMeasureSpec(720,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(1280,View.MeasureSpec.EXACTLY));view.layout(0,0,720,1280);Bitmap bitmap=Bitmap.createBitmap(720,1280,Bitmap.Config.ARGB_8888);view.draw(new Canvas(bitmap));java.nio.file.Path dir=Paths.get(System.getProperty("manchapp.root"),"tmp","ui-v080");Files.createDirectories(dir);try(OutputStream out=Files.newOutputStream(dir.resolve(name+".png"))){assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,out));}bitmap.recycle();}
 
-    @Test public void freshInstallAlwaysHasAValidDemoSale()throws Exception{
+    @Test public void freshInstallStartsWithEmptyPersonalData()throws Exception{
         Context context=RuntimeEnvironment.getApplication();
         LocalStore store=new LocalStore(context,"owner-fresh-"+System.nanoTime()+".json");
-        JSONObject snapshot=store.snapshot(),settings=snapshot.getJSONObject("settings");
+        JSONObject settings=store.snapshot().getJSONObject("settings");
+        assertEquals("",settings.optString("name"));
+        assertEquals("",settings.optString("pickup"));
+        assertEquals("",settings.optString("phone"));
+        assertEquals(-12.150786,settings.optDouble("latitude"),0);
+        assertEquals(-76.889562,settings.optDouble("longitude"),0);
         assertEquals("Invalid date: "+settings,"",SaleSchedule.invalid(settings));
-        assertTrue("Reserva vencida",SaleSchedule.parse(settings.optString("reserveUntil"),false)>System.currentTimeMillis());
-        assertTrue(settings.has("latitude"));
-        assertTrue(settings.has("longitude"));
-        JSONArray zones=settings.getJSONArray("zones");
-        assertEquals(3,zones.length());
-        for(int i=0;i<zones.length();i++)assertTrue("Zona sin cobertura",zones.getJSONObject(i).optDouble("maxKm",0)>0);
-        assertTrue(store.snapshot().getString("storeId").length()>10);
+        assertEquals(3,settings.getJSONArray("zones").length());
     }
 
     @Test public void localOrderAndPendingQueueSurviveReopen()throws Exception{
@@ -56,11 +55,15 @@ public class OwnerFlowTest {
         assertEquals(store.snapshot().getString("storeId"),reopened.snapshot().getString("storeId"));
     }
 
-    @Test public void ownerConfirmsOrderBeforeSchedulingSaleDay()throws Exception{
+    @Test public void ownerStageChainIncludesPreparationAndCooking()throws Exception{
         assertEquals("confirmed",SaleSchedule.next("registered",false));
-        assertEquals("confirmed",SaleSchedule.next("registered",true));
-        assertEquals("sale_day",SaleSchedule.next("confirmed",false));
-        assertEquals("sale_day",SaleSchedule.next("confirmed",true));
+        assertEquals("preparing",SaleSchedule.next("confirmed",false));
+        assertEquals("cooking",SaleSchedule.next("preparing",false));
+        assertEquals("sale_day",SaleSchedule.next("cooking",false));
+        assertEquals("delivering",SaleSchedule.next("sale_day",true));
+        assertEquals("pickup_available",SaleSchedule.next("sale_day",false));
+        assertEquals("delivered",SaleSchedule.next("delivering",false));
+        assertEquals("delivered",SaleSchedule.next("pickup_available",false));
     }
 
     @Test public void destinationDefaultsAndFindsWrittenAddress()throws Exception{

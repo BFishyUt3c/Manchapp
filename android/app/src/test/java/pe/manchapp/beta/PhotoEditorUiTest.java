@@ -57,4 +57,28 @@ public class PhotoEditorUiTest {
         }finally{PreviewRenderer.failMask=false;}
     }
 
+    @Test public void decodeFileKeepsOpaquePhotoAtRequestedEdge()throws Exception{
+        Bitmap source=Bitmap.createBitmap(1600,1600,Bitmap.Config.ARGB_8888);
+        source.eraseColor(Color.DKGRAY);
+        File file=new File(RuntimeEnvironment.getApplication().getCacheDir(),"decode-"+System.nanoTime()+".png");
+        try(OutputStream out=new FileOutputStream(file)){assertTrue(source.compress(Bitmap.CompressFormat.PNG,100,out));}
+        Bitmap decoded=ImageTools.decodeFile(file,1280);
+        assertEquals(1280,Math.max(decoded.getWidth(),decoded.getHeight()));
+        assertEquals(Bitmap.Config.ARGB_8888,decoded.getConfig());
+        assertEquals(255,Color.alpha(decoded.getPixel(10,10)));
+    }
+
+    @Test public void transparentFailureKeepsEditWithoutOpeningBrush()throws Exception{
+        source();PreviewRenderer.failMask=true;
+        try(ActivityController<PhotoEditorActivity> controller=Robolectric.buildActivity(PhotoEditorActivity.class).setup().visible()){
+            PhotoEditorActivity activity=controller.get();waitIdle(activity);
+            View root=(View)field(activity,"root");
+            root.findViewWithTag("tool:background").performClick();
+            root.findViewWithTag("transparent").performClick();
+            waitIdle(activity);
+            assertNull(Shadows.shadowOf(activity).getNextStartedActivityForResult());
+            assertNotNull(field(activity,"result"));
+        }finally{PreviewRenderer.failMask=false;}
+    }
+
 }

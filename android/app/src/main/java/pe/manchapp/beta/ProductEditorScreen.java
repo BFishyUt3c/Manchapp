@@ -173,13 +173,46 @@ final class ProductEditorScreen {
                     "Ejemplo: una papa con salsa criolla", false);
             shell.field("extraText", "Notas adicionales (opcional)", draft.optString("extraText"),
                     "Ejemplo: Solo para recojo en la olla", false);
-            String[] categories = {"Salados", "Antojitos", "Postres", "Bebidas", "Combos"};
+            ArrayList<String> categoryList = new ArrayList<>(Arrays.asList("Salados", "Antojitos", "Postres", "Bebidas", "Combos"));
+            JSONObject settings = shell.data().optJSONObject("settings");
+            JSONArray savedCategories = settings==null?null:settings.optJSONArray("categories");
+            if(savedCategories!=null)for(int i=0;i<savedCategories.length();i++){String value=savedCategories.optString(i);if(!value.isEmpty()&&!categoryList.contains(value))categoryList.add(value);}
+            JSONArray allProducts = shell.data().optJSONArray("products");
+            if(allProducts!=null)for(int i=0;i<allProducts.length();i++){String value=allProducts.optJSONObject(i).optString("category");if(!value.isEmpty()&&!categoryList.contains(value))categoryList.add(value);}
+            String sentinel="+ Nueva categoría";categoryList.add(sentinel);
+            final JSONObject draftTarget=draft;
+            String[] categories=categoryList.toArray(new String[0]);
             int index = Arrays.asList(categories).indexOf(draft.optString("category"));
             TextView categoryLabel = shell.text("Tipo de producto", 15, NativeUi.INK, true);
             shell.add(content, categoryLabel, 16);
             Spinner categorySpinner = shell.spinner(categories, Math.max(0, index));
             categorySpinner.setId(View.generateViewId());
             categoryLabel.setLabelFor(categorySpinner.getId());
+            categorySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+                boolean first=true;
+                @Override public void onNothingSelected(AdapterView<?> parent){}
+                @Override public void onItemSelected(AdapterView<?> parent,View view,int position,long id){
+                    if(first){first=false;return;}
+                    if(position!=categories.length-1)return;
+                    EditText input=new EditText(activity);input.setHint("Nombre de la categoría");
+                    AlertDialog dialog=new AlertDialog.Builder(activity).setTitle("Nueva categoría").setView(input)
+                            .setNegativeButton("Cancelar",(d,w)->categorySpinner.setSelection(Math.max(0,index)))
+                            .setPositiveButton("Agregar",null).create();
+                    dialog.setOnShowListener(d->dialog.getButton(-1).setOnClickListener(v->{
+                        String value=input.getText().toString().trim();
+                        if(value.length()<2||value.length()>24){input.setError("Usa entre 2 y 24 caracteres.");return;}
+                        for(String existing:categoryList)if(existing.equalsIgnoreCase(value)){input.setError("Esa categoría ya existe.");return;}
+                        JSONObject current=shell.data().optJSONObject("settings");
+                        if(current==null)return;
+                        JSONArray list=current.optJSONArray("categories");
+                        if(list==null){list=new JSONArray();try{current.put("categories",list);}catch(Exception ignored){}}
+                        list.put(value);
+                        AppShell.put(draftTarget,"category",value);
+                        if(shell.enqueue("settings",current,"settings")){dialog.dismiss();shell.render();}
+                    }));
+                    dialog.show();
+                }
+            });
             shell.setCategorySpinner(categorySpinner);
             shell.add(content, categorySpinner, 6);
             Switch availability = new Switch(activity);

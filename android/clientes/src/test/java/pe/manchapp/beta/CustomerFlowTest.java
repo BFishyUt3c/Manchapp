@@ -51,4 +51,35 @@ public class CustomerFlowTest {
             long end=System.currentTimeMillis()+20000;while(System.currentTimeMillis()<end&&(Boolean)field(activity,"submittingOrder")){Thread.sleep(30);ShadowLooper.idleMainLooper();}assertFalse((Boolean)field(activity,"submittingOrder"));assertEquals("device_pending",store.snapshot().getJSONArray("orders").getJSONObject(0).getString("sendState"));assertEquals("receipt",field(activity,"screen"));shot((View)field(activity,"root"),"customer-received");
         }
     }
+
+    @Test public void customerReceiptShowsStageTimelineForCookingPickup()throws Exception{
+        Context context=RuntimeEnvironment.getApplication();CustomerStore store=new CustomerStore(context,"customer-stages-"+System.nanoTime()+".json");store.quantity("causa",1);
+        JSONObject pending=store.placePracticeOrder(details().put("fulfillment","pickup"));
+        JSONObject sent=CustomerStore.copy(pending).put("status","cooking").put("sendState","sent").put("version",1);
+        store.acceptOrder(pending.getString("id"),new JSONObject().put("order",sent));
+        try(ActivityController<CustomerActivity> controller=Robolectric.buildActivity(CustomerActivity.class).setup().visible()){
+            CustomerActivity activity=controller.get();set(activity,"store",store);set(activity,"selectedId",pending.getString("id"));set(activity,"screen","receipt");render(activity);
+            View root=(View)field(activity,"root");
+            assertNotNull(root.findViewWithTag("stage:received"));
+            assertNotNull(root.findViewWithTag("stage:accepted"));
+            assertNotNull(root.findViewWithTag("stage:preparing"));
+            assertNotNull(root.findViewWithTag("stage:cooking"));
+            assertNotNull(root.findViewWithTag("stage:ready"));
+            assertNotNull(root.findViewWithTag("stage:delivered"));
+            assertEquals("Pedido listo para recoger",((android.widget.TextView)root.findViewWithTag("stage:ready")).getText().toString());
+        }
+    }
+
+    @Test public void cancelReasonIsDisplayedInCustomerReceipt()throws Exception{
+        Context context=RuntimeEnvironment.getApplication();CustomerStore store=new CustomerStore(context,"customer-cancel-"+System.nanoTime()+".json");store.quantity("causa",1);
+        JSONObject pending=store.placePracticeOrder(details());
+        JSONObject sent=CustomerStore.copy(pending).put("status","cancelled").put("sendState","sent").put("version",1).put("cancelReason","Se acabó la causa");
+        store.acceptOrder(pending.getString("id"),new JSONObject().put("order",sent));
+        try(ActivityController<CustomerActivity> controller=Robolectric.buildActivity(CustomerActivity.class).setup().visible()){
+            CustomerActivity activity=controller.get();set(activity,"store",store);set(activity,"selectedId",pending.getString("id"));set(activity,"screen","receipt");render(activity);
+            View note=((View)field(activity,"root")).findViewWithTag("cancel:reason");
+            assertNotNull(note);
+            assertTrue(((android.widget.TextView)note).getText().toString().contains("Se acabó la causa"));
+        }
+    }
 }

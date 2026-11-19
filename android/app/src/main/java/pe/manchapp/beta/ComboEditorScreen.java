@@ -1,12 +1,16 @@
 package pe.manchapp.beta;
 
 import android.app.AlertDialog;
+import android.graphics.Bitmap;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
+import android.view.Gravity;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 import org.json.*;
+import java.io.IOException;
 import java.util.*;
 
 final class ComboEditorScreen {
@@ -102,27 +106,55 @@ final class ComboEditorScreen {
 
         shell.pair(content, "Elegir productos (" + shell.comboIds.size() + ")", () -> chooseComboProducts(shell),
                 "+ Producto rápido", () -> createInlineProduct(shell));
+        shell.add(content, shell.button("Crear imagen del combo", false, () -> createComboImage(shell)), 10);
 
+        JSONObject quantities = combo.optJSONObject("quantities");
+        if (quantities == null) {
+            quantities = new JSONObject();
+            AppShell.put(combo, "quantities", quantities);
+        }
+        final JSONObject qtyMap = quantities;
+        StringBuilder expression = new StringBuilder();
         StringBuilder summary = new StringBuilder();
         JSONObject baseSchedule = null;
+        double sum = 0;
         for (String id : shell.comboIds) {
             JSONObject p = shell.find("products", id);
-            if (p != null) {
-                if (summary.length() > 0) summary.append(" + ");
-                summary.append(p.optString("name"));
-                if (baseSchedule == null) baseSchedule = SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"));
-            }
+            if (p == null) continue;
+            int qty = Math.max(1, quantities.optInt(id, 1));
+            AppShell.put(quantities, id, qty);
+            double price = p.optDouble("price");
+            sum += qty * price;
+            if (expression.length() > 0) expression.append(" + ");
+            expression.append(qty > 1 ? qty + " × " + shell.cash(price) : shell.cash(price));
+            if (summary.length() > 0) summary.append(" + ");
+            summary.append(qty > 1 ? qty + " × " : "").append(p.optString("name"));
+            if (baseSchedule == null) baseSchedule = SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"));
+            final String productId = id;
+            LinearLayout row = new LinearLayout(shell.activity());
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.addView(shell.ui().text(p.optString("name") + " · " + shell.cash(price), 15, NativeUi.INK, false), new LinearLayout.LayoutParams(0, -2, 1));
+            TextView minus = shell.ui().button("−", false, null, () -> { AppShell.put(qtyMap, productId, Math.max(1, qtyMap.optInt(productId, 1) - 1)); shell.render(); });
+            TextView qtyView = shell.ui().text(String.valueOf(qty), 16, NativeUi.WINE, true);
+            TextView plus = shell.ui().button("+", false, null, () -> { AppShell.put(qtyMap, productId, Math.min(99, qtyMap.optInt(productId, 1) + 1)); shell.render(); });
+            minus.setMinWidth(shell.dp(40)); plus.setMinWidth(shell.dp(40)); qtyView.setMinWidth(shell.dp(30)); qtyView.setGravity(Gravity.CENTER);
+            row.addView(minus); row.addView(qtyView); row.addView(plus);
+            shell.add(content, row, 6);
         }
         if (summary.length() > 0) {
+            expression.append(" = ").append(shell.cash(sum)).append(" · es la suma por el precio de ambos sin combo");
             shell.add(content, shell.ui().message("Incluye:", summary.toString(), NativeUi.GOLD), 12);
         }
 
         bind(shell, combo, "name", shell.field("name", "Nombre del combo", combo.optString("name"), "Ej: Combo familiar", false));
-        bind(shell, combo, "description", shell.field("description", "Detalle del contenido", combo.optString("description"), "Ej: 3 cachangas + 2 cafés", false));
+        EditText descriptionField = shell.field("description", "Detalle del contenido", combo.optString("description"), expression.toString(), false);
+        if (expression.length() > 0 && descriptionField.getText().toString().isEmpty()) descriptionField.setHint(expression.toString());
+        bind(shell, combo, "description", descriptionField);
         bind(shell, combo, "price", shell.field("price", "Precio del combo (S/)", combo.optString("price"), "Ej: 15.00", true));
         bind(shell, combo, "stock", shell.field("stock", "¿Cuántos combos ofrecerás?", combo.optString("stock"), "Ej: 10", true));
 
         final JSONObject finalSchedule = baseSchedule;
+        final JSONObject comboDraft = combo;
         shell.primary("Guardar combo", () -> {
             try {
                 if (shell.comboIds.isEmpty()) {
@@ -159,8 +191,8 @@ final class ComboEditorScreen {
                         .put("portion", shell.value("description"))
                         .put("line", "commercial")
                         .put("available", true)
-                        .put("image", "")
-                        .put("imageReference", true)
+                        .put("image", comboDraft.optString("image", ""))
+                        .put("imageReference", comboDraft.optBoolean("imageReference", true))
                         .put("version", 0)
                         .put("comboProductIds", new JSONArray(shell.comboIds));
 
@@ -185,6 +217,44 @@ final class ComboEditorScreen {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             public void onTextChanged(CharSequence value, int start, int before, int count) {}
             public void afterTextChanged(Editable value) { AppShell.put(combo, key, value.toString()); }
+        });
+    }
+
+    static void createComboImage(AppShell shell){
+        if(shell.comboIds.isEmpty()){shell.toast("Elige los productos del combo primero.");return;}
+        MainActivity activity=shell.activity();
+        shell.worker().execute(()->{
+            ArrayList<Bitmap> bitmaps=new ArrayList<>();CompositionDocument document=null;
+            try{
+                for(String id:shell.comboIds){
+                    JSONObject p=shell.find("products",id);
+                    if(p==null)continue;
+                    Bitmap source=ImageTools.productPhoto(activity,p,960);
+                    FoodPhotoEngine engine=new FoodPhotoEngine(activity,source);
+                    engine.includeObjects(true);
+                    Bitmap cutout=engine.render(true,"transparent");
+                    engine.close();
+                    bitmaps.add(source);bitmaps.add(cutout);
+                }
+                if(bitmaps.size()<2)throw new IOException("No encontramos imágenes para el combo.");
+                Bitmap first=bitmaps.get(0),cutout=bitmaps.get(1);
+                Bitmap background=FoodPhotoEngine.texture(first.getWidth(),first.getHeight(),"cloth");
+                document=CompositionDocument.create(activity,cutout,background,first);
+                for(int i=3;i<bitmaps.size();i+=2)document.addProduct(bitmaps.get(i));
+                document.save();
+                Bitmap exported=document.export();
+                String encoded=ImageTools.encodeEdited(exported);
+                exported.recycle();background.recycle();
+                JSONObject combo=shell.comboDraft();
+                AppShell.put(combo,"image",encoded);
+                AppShell.put(combo,"imageReference",false);
+                activity.runOnUiThread(()->{shell.toast("Imagen del combo lista.");shell.render();});
+            }catch(Exception|OutOfMemoryError error){
+                activity.runOnUiThread(()->shell.toast("No pudimos crear la imagen. Prueba con menos productos."));
+            }finally{
+                if(document!=null)document.close();
+                for(Bitmap bitmap:bitmaps)if(!bitmap.isRecycled())bitmap.recycle();
+            }
         });
     }
 

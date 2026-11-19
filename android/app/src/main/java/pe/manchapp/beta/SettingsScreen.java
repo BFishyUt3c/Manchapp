@@ -27,16 +27,16 @@ final class SettingsScreen {
 
     static void showProfile(AppShell shell) {
         JSONObject s = shell.data().optJSONObject("settings");
-        shell.title("Así encontrarán a Manka Kusi", "Estos datos aparecen en el catálogo, pedidos y afiches.");
+        String business=s.optString("name");shell.title(business.isEmpty()?"Datos del emprendimiento":"Datos de "+business, "Estos datos aparecen en el catálogo, pedidos y afiches.");
         shell.field("name", "Nombre del emprendimiento", s.optString("name"), "Nombre", false);
         shell.field("pickup", "Lugar de recojo y referencia", s.optString("pickup"), "Indica un punto fácil de reconocer", false);
         LinearLayout location = shell.ui().message("UBICACIÓN DE REFERENCIA",
-                s.optString("pickup", "Frente a la Institución Educativa Los Jardines de Manchay"), NativeUi.GOLD);
+                s.optString("pickup", "Agrega la referencia y la ubicación de tu punto de recojo."), NativeUi.GOLD);
         double latitude = s.optDouble("latitude", Double.NaN), longitude = s.optDouble("longitude", Double.NaN);
         if (Double.isFinite(latitude) && Double.isFinite(longitude)) {
             shell.add(location, shell.ui().button("Abrir en la app de mapas", false, "pin", () -> {
                 try {
-                    String label = Uri.encode(s.optString("name", "Manka Kusi"));
+                    String label = Uri.encode(s.optString("name", "Mi olla"));
                     shell.activity().startActivity(new Intent(Intent.ACTION_VIEW,
                             Uri.parse("geo:" + latitude + "," + longitude + "?q=" + latitude + "," + longitude + "(" + label + ")")));
                 } catch (Exception error) {
@@ -49,6 +49,8 @@ final class SettingsScreen {
                 .setInputType(InputType.TYPE_CLASS_PHONE);
         shell.note("El celular es opcional. Puedes agregarlo ahora o completarlo más adelante.");
         shell.field("hours", "Información de atención", s.optString("hours"), "Días y horas", false);
+        shell.field("latitude", "Latitud", s.has("latitude") ? s.optString("latitude") : "", "-12.000000", false).setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        shell.field("longitude", "Longitud", s.has("longitude") ? s.optString("longitude") : "", "-77.000000", false).setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
         shell.primary("Guardar datos", () -> {
             if (shell.value("name").length() < 2) {
                 shell.editorError("name", "Escribe el nombre del emprendimiento.");
@@ -65,6 +67,21 @@ final class SettingsScreen {
             JSONObject settings = shell.data().optJSONObject("settings");
             for (String key : new String[]{"name", "pickup", "phone", "hours"}) {
                 AppShell.put(settings, key, shell.value(key));
+            }
+            String latText = shell.value("latitude").trim(), lngText = shell.value("longitude").trim();
+            if (latText.isEmpty() && lngText.isEmpty()) {
+                settings.remove("latitude");
+                settings.remove("longitude");
+            } else {
+                try {
+                    double lat = Double.parseDouble(latText), lng = Double.parseDouble(lngText);
+                    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) throw new NumberFormatException();
+                    AppShell.put(settings, "latitude", lat);
+                    AppShell.put(settings, "longitude", lng);
+                } catch (Exception error) {
+                    shell.editorError("latitude", "Escribe latitud y longitud válidas, o deja ambos vacíos.");
+                    return;
+                }
             }
             shell.enqueue("settings", settings, "settings");
         });

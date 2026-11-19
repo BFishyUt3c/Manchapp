@@ -20,7 +20,7 @@ android {
     sourceSets {
         main {
             java.srcDirs = ['src/main/java', '../app/src/main/java']
-            java.includes = ['**/CustomerActivity.java', '**/CustomerStore.java', '**/DeviceBridgeClient.java', '**/DeliveryLocator.java', '**/NativeUi.java', '**/DishArt.java', '**/ImageTools.java', '**/SaleRules.java', '**/SaleSchedule.java', '**/DeliveryDestination.java', '**/SafeJson.java', '**/CrossFile.java', '**/HttpApi.java', '**/OrderDraft.java', '**/RecoveryScreen.java']
+            java.includes = ['**/CustomerActivity.java', '**/CustomerStore.java', '**/CustomerNotifier.java', '**/DeviceBridgeClient.java', '**/DeliveryLocator.java', '**/NativeUi.java', '**/DishArt.java', '**/ImageTools.java', '**/SaleRules.java', '**/SaleSchedule.java', '**/DeliveryDestination.java', '**/SafeJson.java', '**/CrossFile.java', '**/HttpApi.java', '**/OrderDraft.java', '**/RecoveryScreen.java']
             assets.srcDirs = ['../app/src/main/assets']
         }
     }

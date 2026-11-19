@@ -110,6 +110,9 @@ final class OrderScreen {
         LinearLayout food = shell.card();
         shell.add(food, shell.text("ESTADO DEL PEDIDO", 12, NativeUi.WINE, true), 0);
         shell.add(food, ui.heading(shell.status(order.optString("status")), 24), 6);
+        if (order.optString("status").equals("cancelled") && !order.optString("cancelReason").isEmpty()) {
+            shell.add(food, shell.text("Motivo de la cancelación: " + order.optString("cancelReason"), 14, NativeUi.MUTED, false), 4);
+        }
         JSONArray items = order.optJSONArray("items");
         for (int i = 0; items != null && i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
@@ -230,6 +233,8 @@ final class OrderScreen {
 
         String next = SaleSchedule.next(state, delivery);
         String label = next.equals("confirmed") ? "Aceptar pedido"
+                : next.equals("preparing") ? "Iniciar preparación"
+                : next.equals("cooking") ? "Poner a cocinar"
                 : next.equals("sale_day") ? "Marcar día de venta"
                 : next.equals("delivering") ? "El delivery salió"
                 : next.equals("pickup_available") ? "Habilitar recojo" : "Marcar como entregado";
@@ -272,16 +277,30 @@ final class OrderScreen {
             });
         }
         if (!Arrays.asList("delivering", "delivered", "cancelled").contains(state)) {
-            shell.add(content, shell.button("Cancelar este pedido", false, () -> new AlertDialog.Builder(activity)
-                    .setTitle("¿Cancelar el pedido?")
-                    .setMessage("Revisa con el cliente antes de cancelar. Los cupos volverán a quedar disponibles.")
-                    .setNegativeButton("Conservar pedido", null)
-                    .setPositiveButton("Sí, cancelar", (d, w) -> {
-                        if (shell.checkPending(shell.currentId())) return;
-                        JSONObject change = orderChange(order);
-                        AppShell.put(change, "status", "cancelled");
-                        shell.enqueue("order", change, "orders");
-                    }).show()), 16);
+            shell.add(content, shell.button("Cancelar este pedido", false, () -> {
+                EditText reason = new EditText(activity);
+                reason.setHint("Motivo de la cancelación");
+                AlertDialog dialog = new AlertDialog.Builder(activity)
+                        .setTitle("¿Cancelar el pedido?")
+                        .setMessage("Revisa con el cliente antes de cancelar. Los cupos volverán a quedar disponibles.")
+                        .setView(reason)
+                        .setNegativeButton("Conservar pedido", null)
+                        .setPositiveButton("Sí, cancelar", null)
+                        .create();
+                dialog.setOnShowListener(v -> dialog.getButton(-1).setOnClickListener(view -> {
+                    if (shell.checkPending(shell.currentId())) return;
+                    String value = reason.getText().toString().trim();
+                    if (value.length() < 4) {
+                        reason.setError("Escribe el motivo de la cancelación.");
+                        return;
+                    }
+                    JSONObject change = orderChange(order);
+                    AppShell.put(change, "status", "cancelled");
+                    AppShell.put(change, "cancelReason", value);
+                    if (shell.enqueue("order", change, "orders")) dialog.dismiss();
+                }));
+                dialog.show();
+            }), 16);
         }
     }
 

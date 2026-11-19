@@ -305,20 +305,23 @@ final class AppShell {
     String status(String s) {
         switch (s) {
             case "registered":
-                return "Por confirmar";
+                return "Pedido recibido";
             case "confirmed":
-                return "Pedido confirmado";
+                return "Pedido aceptado";
             case "preparing":
+                return "En preparación";
+            case "cooking":
+                return "Cocinando pedido";
             case "ready":
                 return "En preparación";
             case "sale_day":
                 return "Día de venta";
             case "pickup_available":
-                return "Disponible para recoger";
+                return "Listo para recoger";
             case "delivering":
-                return "Delivery salió";
+                return "Delivery en camino";
             case "delivered":
-                return "Entregado";
+                return "Pedido entregado";
             case "cancelled":
                 return "Cancelado";
             default:
@@ -567,7 +570,7 @@ final class AppShell {
             }
             root.addView(ui.navigation(new String[]{"home", "publications", "products", "orders"},
                     new String[]{"Inicio", "Imágenes", "Productos", "Gestionar Ventas"},
-                    new String[]{"home", "photo", "food", "orders"}, destination(), this::changeTab));
+                    new String[]{"home", "photo", "products", "orders"}, destination(), this::changeTab));
         } finally {
             renderState = null;
         }
@@ -579,8 +582,8 @@ final class AppShell {
             case "schedule":
             case "orderSchedule": return "Fecha de venta";
             case "home": return "Inicio";
-            case "settings": return "Manka Kusi";
-            case "profile": return "Datos de Manka Kusi";
+            case "settings": { String name=data().optJSONObject("settings").optString("name"); return name.isEmpty()?"Mi olla":name; }
+            case "profile": { String name=data().optJSONObject("settings").optString("name"); return name.isEmpty()?"Datos del emprendimiento":"Datos de "+name; }
             case "delivery": return "Reparto cercano";
             case "payments": return "Pagos y QR";
             case "qr": return "Revisar mi QR";
