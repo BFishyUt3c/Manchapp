@@ -6,51 +6,17 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.MediaStore;
-import android.view.View;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextUtils;
+import android.text.TextWatcher;
 import android.widget.*;
 import org.json.*;
 import java.io.*;
 import java.util.ArrayList;
+import java.util.Locale;
 
 final class FlyerStudioScreen {
-
-    private static void renderProductChips(AppShell shell, LinearLayout content, JSONObject activeFirst) {
-        JSONArray products = shell.data().optJSONArray("products");
-        if (products == null || products.length() == 0) return;
-        String activeSale = SaleSchedule.key(SaleSchedule.forProduct(activeFirst, shell.data().optJSONObject("settings")));
-        HorizontalScrollView strip = new HorizontalScrollView(shell.activity());
-        strip.setHorizontalScrollBarEnabled(false);
-        LinearLayout row = new LinearLayout(shell.activity());
-        for (int i = 0; i < products.length(); i++) {
-            JSONObject prod = products.optJSONObject(i);
-            if (!prod.optString("line").equals("commercial")) continue;
-            String id = prod.optString("id");
-            boolean on = shell.flyerIds.contains(id);
-            TextView chip = shell.ui().chip((on ? "✓ " : "+ ") + prod.optString("name"),
-                    on ? NativeUi.CARD : NativeUi.WINE, on ? NativeUi.WINE : NativeUi.CARD);
-            chip.setPadding(shell.dp(12), shell.dp(8), shell.dp(12), shell.dp(8));
-            chip.setTextSize(13);
-            chip.setOnClickListener(v -> {
-                shell.publicationMessage(shell.value("message"));
-                if (on) {
-                    if (shell.flyerIds.size() <= 1) { shell.toast("El afiche necesita al menos 1 producto."); return; }
-                    shell.flyerIds.remove(id);
-                } else {
-                    if (shell.flyerIds.size() >= 4) { shell.toast("Elige hasta 4 productos para que se vean claros."); return; }
-                    String prodSale = SaleSchedule.key(SaleSchedule.forProduct(prod, shell.data().optJSONObject("settings")));
-                    if (!activeSale.equals(prodSale)) { shell.toast("Para un mismo afiche, elige productos de la misma fecha de venta."); return; }
-                    shell.flyerIds.add(id);
-                }
-                shell.currentId(shell.flyerIds.get(0));
-                shell.render();
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-            lp.rightMargin = shell.dp(8);
-            row.addView(chip, lp);
-        }
-        strip.addView(row);
-        shell.add(content, strip, 12);
-    }
 
     static void openNextSalePromo(AppShell shell) {
         JSONArray products = shell.data().optJSONArray("products");
@@ -67,12 +33,15 @@ final class FlyerStudioScreen {
             shell.toast("Primero agrega o habilita un producto para anunciar tu venta.");
             return;
         }
+        shell.history().add(shell.screen() + "\t" + shell.currentId());
         shell.flyerIds.clear();
         shell.flyerIds.addAll(chosen);
-        shell.flyerStyle(2);
-        shell.flyerFormat(2);
+        shell.flyerStyle(2);   // Próxima venta
+        shell.flyerFormat(2);  // Story Flash
         shell.publicationMessage("¡Reserva con anticipación para nuestra próxima venta!");
-        shell.go("publish", chosen.get(0));
+        shell.screen("publish");
+        shell.currentId(chosen.get(0));
+        shell.render();
     }
 
     static JSONArray flyerProducts(AppShell shell) {
@@ -91,45 +60,113 @@ final class FlyerStudioScreen {
     }
 
     static void chooseFlyerProducts(AppShell shell) {
-        if (shell.screen().equals("publish")) shell.publicationMessage(shell.value("message"));
+        final boolean fromOutside = !shell.screen().equals("publish");
+        if (!fromOutside) shell.publicationMessage(shell.value("message"));
+
         JSONArray products = shell.data().optJSONArray("products");
-        ArrayList<String> ids = new ArrayList<>(), names = new ArrayList<>();
+        ArrayList<JSONObject> commercial = new ArrayList<>();
         for (int i = 0; products != null && i < products.length(); i++) {
             JSONObject product = products.optJSONObject(i);
-            if (product.optString("line").equals("commercial")) {
-                ids.add(product.optString("id"));
-                names.add(product.optString("name") + " · " + shell.cash(product.optDouble("price"))
-                        + " · " + SaleSchedule.display(product.optString("saleDate"), true));
+            if (product != null && product.optString("line").equals("commercial")) {
+                commercial.add(product);
             }
         }
-        if (ids.isEmpty()) {
+        if (commercial.isEmpty()) {
             shell.toast("Primero agrega un producto para vender.");
             return;
         }
+
         ArrayList<String> chosen = new ArrayList<>();
-        boolean[] checked = new boolean[ids.size()];
-        for (int i = 0; i < ids.size(); i++) {
-            if (shell.flyerIds.contains(ids.get(i))) {
-                checked[i] = true;
-                chosen.add(ids.get(i));
+        if (!fromOutside) {
+            for (JSONObject p : commercial) {
+                if (shell.flyerIds.contains(p.optString("id"))) {
+                    chosen.add(p.optString("id"));
+                }
             }
         }
         if (chosen.isEmpty()) {
-            checked[0] = true;
-            chosen.add(ids.get(0));
+            chosen.add(commercial.get(0).optString("id"));
         }
-        AlertDialog dialog = new AlertDialog.Builder(shell.activity())
-                .setTitle("Productos del afiche · máximo 4")
-                .setMultiChoiceItems(names.toArray(new String[0]), checked, (d, index, on) -> {
-                    if (on && chosen.size() == 4) {
-                        ((AlertDialog) d).getListView().setItemChecked(index, false);
-                        shell.toast("Elige hasta 4 para que se vean claros.");
-                        return;
+
+        MainActivity activity = shell.activity();
+        LinearLayout root = shell.column();
+        root.setBackgroundColor(NativeUi.BG);
+        root.setPadding(shell.dp(18), shell.dp(14), shell.dp(18), shell.dp(10));
+
+        TextView counter = shell.text("Elegidos: " + chosen.size() + " de 4 (misma fecha de venta)",
+                13, NativeUi.WINE, true);
+        root.addView(counter);
+
+        EditText search = new EditText(activity);
+        search.setHint("Buscar producto por nombre...");
+        search.setSingleLine(true);
+        search.setTextSize(16);
+        search.setTypeface(shell.regular());
+        search.setTextColor(NativeUi.INK);
+        search.setHintTextColor(NativeUi.MUTED);
+        search.setPadding(shell.dp(13), shell.dp(11), shell.dp(13), shell.dp(11));
+        search.setBackground(shell.bg(NativeUi.CARD, NativeUi.LINE, 12));
+        search.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        shell.add(root, search, 10);
+
+        ScrollView listScroll = new ScrollView(activity);
+        LinearLayout listContainer = shell.column();
+        listScroll.addView(listContainer);
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, shell.dp(300));
+        scrollLp.topMargin = shell.dp(10);
+        root.addView(listScroll, scrollLp);
+
+        Runnable renderList = () -> {
+            listContainer.removeAllViews();
+            String query = search.getText().toString().trim().toLowerCase(Locale.ROOT);
+            int shown = 0;
+            for (JSONObject p : commercial) {
+                String name = p.optString("name");
+                if (!query.isEmpty() && !name.toLowerCase(Locale.ROOT).contains(query)) continue;
+                shown++;
+                String id = p.optString("id");
+                String label = name + " · " + shell.cash(p.optDouble("price"))
+                        + "\n" + SaleSchedule.display(p.optString("saleDate"), true);
+
+                CheckBox box = new CheckBox(activity);
+                box.setText(label);
+                box.setTextSize(15);
+                box.setTextColor(NativeUi.INK);
+                box.setTypeface(shell.regular());
+                box.setPadding(shell.dp(6), shell.dp(10), shell.dp(6), shell.dp(10));
+                box.setChecked(chosen.contains(id));
+                box.setOnCheckedChangeListener((btn, isChecked) -> {
+                    if (isChecked) {
+                        if (chosen.size() >= 4) {
+                            btn.setChecked(false);
+                            shell.toast("Elige hasta 4 productos para que se vean claros.");
+                            return;
+                        }
+                        if (!chosen.contains(id)) chosen.add(id);
+                    } else {
+                        chosen.remove(id);
                     }
-                    if (on) chosen.add(ids.get(index));
-                    else chosen.remove(ids.get(index));
-                })
-                .setNegativeButton("Volver", null)
+                    counter.setText("Elegidos: " + chosen.size() + " de 4 (misma fecha de venta)");
+                });
+                shell.add(listContainer, box, 4);
+            }
+            if (shown == 0) {
+                shell.add(listContainer, shell.text("No hay productos que coincidan con \"" + query + "\".",
+                        14, NativeUi.MUTED, false), 12);
+            }
+        };
+
+        renderList.run();
+        search.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(Editable s) { renderList.run(); }
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(activity)
+                .setTitle("Productos del afiche")
+                .setView(root)
+                .setNegativeButton("Cancelar", null)
                 .setPositiveButton("Usar productos", null)
                 .create();
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
@@ -146,6 +183,12 @@ final class FlyerStudioScreen {
                     shell.toast("Para un mismo afiche, elige productos de la misma fecha de venta.");
                     return;
                 }
+            }
+            if (fromOutside) {
+                shell.history().add(shell.screen() + "\t" + shell.currentId());
+                shell.flyerStyle(0);   // Catálogo / Producto
+                shell.flyerFormat(1);  // Cuadrada 1:1
+                shell.publicationMessage("");
             }
             shell.flyerIds.clear();
             shell.flyerIds.addAll(chosen);
@@ -166,12 +209,26 @@ final class FlyerStudioScreen {
         }
         LinearLayout content = shell.content();
         MainActivity activity = shell.activity();
-        shell.title("Tu afiche", selected.length() == 1
-                ? "Elige un estilo y revisa tu publicación."
-                : "Cada producto con su foto y precio.");
-        renderProductChips(shell, content, p);
-        shell.add(content, shell.button("Elegir productos (" + selected.length() + ")", false,
+        boolean isStoryAnnouncement = shell.flyerFormat() == 2 || shell.flyerStyle() == 2;
+        shell.title(
+                isStoryAnnouncement ? "Anunciar próxima venta" : "Tu afiche",
+                isStoryAnnouncement
+                        ? "Listo para subir a tus estados de WhatsApp o redes."
+                        : (selected.length() == 1 ? "Elige un estilo y revisa tu publicación." : "Cada producto con su foto y precio.")
+        );
+
+        ArrayList<String> selectedNames = new ArrayList<>();
+        for (int i = 0; i < selected.length(); i++) {
+            selectedNames.add(selected.optJSONObject(i).optString("name"));
+        }
+        shell.add(content, shell.ui().message(
+                "Productos incluidos (" + selected.length() + "/4)",
+                TextUtils.join(" · ", selectedNames),
+                NativeUi.GOLD
+        ), 12);
+        shell.add(content, shell.button("Cambiar productos (" + selected.length() + "/4)", false,
                 () -> chooseFlyerProducts(shell)), 10);
+
         shell.segmented(selected.length() > 1
                 ? new String[]{"Catálogo", "Destacados", "Próxima venta"}
                 : new String[]{"Producto", "Combo", "Próxima venta"}, shell.flyerStyle(), i -> {
@@ -184,6 +241,7 @@ final class FlyerStudioScreen {
             shell.flyerFormat(i);
             shell.render();
         });
+
         ImageView preview = new ImageView(activity);
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
         preview.setBackground(shell.bg(0xffeee7de, 0, 18));
@@ -245,7 +303,7 @@ final class FlyerStudioScreen {
 
     static String storeSlug(JSONObject settings) {
         String raw = settings == null ? "" : settings.optString("name", "manka-kusi");
-        String slug = raw.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+        String slug = raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
         return slug.isEmpty() ? "manka-kusi" : slug;
     }
 

@@ -8,16 +8,30 @@ import org.json.*;
 
 final class ProductScreen {
 
+    private static int catalogFilter = 0; // 0 = Todos, 1 = Productos, 2 = Combos
+
+    private static boolean isCombo(JSONObject p) {
+        return "Combos".equalsIgnoreCase(p.optString("category"))
+                || "combo".equalsIgnoreCase(p.optString("saleUnit"));
+    }
+
     static void showProducts(AppShell shell) {
         MainActivity activity = shell.activity();
         NativeUi ui = shell.ui();
         LinearLayout content = shell.content();
 
         shell.title("Lo que preparas", "Productos, combos y cupos para tu venta programada.");
-        shell.add(content, ui.button("Agregar producto", true, "plus", () -> startEditor(shell, null)), 18);
-        shell.pair(content,
-                "Crear un combo", () -> ComboEditorScreen.selectProduct(shell, true),
-                "Compartir catálogo", () -> FlyerStudioScreen.shareCatalogWhatsApp(shell));
+
+        LinearLayout actionsRow = new LinearLayout(activity);
+        TextView addProduct = ui.button("+ Producto", true, null, () -> startEditor(shell, null));
+        TextView addCombo = ui.button("+ Combo", true, null, () -> ComboEditorScreen.selectProduct(shell, true));
+        addProduct.setTextSize(15);
+        addCombo.setTextSize(15);
+        LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(0, -2, 1);
+        leftLp.rightMargin = shell.dp(8);
+        actionsRow.addView(addProduct, leftLp);
+        actionsRow.addView(addCombo, new LinearLayout.LayoutParams(0, -2, 1));
+        shell.add(content, actionsRow, 18);
 
         if (hasDraft(shell)) {
             shell.menu("Continuar con mi borrador",
@@ -28,54 +42,62 @@ final class ProductScreen {
                     });
         }
 
+        shell.segmented(new String[]{"Todos", "Productos", "Combos"}, catalogFilter, index -> {
+            catalogFilter = index;
+            shell.render();
+        });
+
         JSONArray products = shell.data().optJSONArray("products");
         int found = 0;
         for (int i = 0; products != null && i < products.length(); i++) {
             JSONObject p = products.optJSONObject(i);
             if (!p.optString("line").equals("commercial")) continue;
+            boolean combo = isCombo(p);
+            if (catalogFilter == 1 && combo) continue;
+            if (catalogFilter == 2 && !combo) continue;
             found++;
-            LinearLayout c = shell.card(), row = new LinearLayout(activity);
+
+            LinearLayout c = shell.card();
+            if (combo) {
+                c.setBackground(shell.bg(0xfffdf6e7, NativeUi.GOLD, 16));
+            }
+            LinearLayout row = new LinearLayout(activity);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.addView(image(shell, p, 88), new LinearLayout.LayoutParams(shell.dp(88), shell.dp(94)));
+
             LinearLayout info = shell.column();
             info.setPadding(shell.dp(14), 0, 0, 0);
+            if (combo) {
+                TextView badge = ui.chip("COMBO", NativeUi.WINE, NativeUi.GOLD);
+                badge.setTextSize(11);
+                badge.setPadding(shell.dp(8), shell.dp(2), shell.dp(8), shell.dp(2));
+                LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(-2, -2);
+                badgeLp.bottomMargin = shell.dp(4);
+                info.addView(badge, badgeLp);
+            }
             info.addView(shell.text(p.optString("name"), 18, NativeUi.INK, true));
             shell.add(info, shell.text(shell.cash(p.optDouble("price")) + " " + unit(p), 18, NativeUi.WINE, true), 4);
             boolean available = p.optBoolean("available") && p.optInt("stock") > 0;
             shell.add(info, shell.text(available ? p.optInt("stock") + " cupos" : "No disponible", 13, available ? NativeUi.GREEN : NativeUi.MUTED, true), 4);
             shell.add(info, shell.text("Venta: " + SaleSchedule.display(p.optString("saleDate"), true), 12, NativeUi.MUTED, false), 4);
+
             row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
             TextView arrow = shell.text("›", 26, NativeUi.MUTED, false);
             row.addView(arrow);
             c.addView(row);
 
-            LinearLayout stockRow = new LinearLayout(activity);
-            stockRow.setGravity(Gravity.CENTER_VERTICAL);
-            TextView minus = ui.button("−", false, null, () -> adjustStock(shell, p, -1));
-            minus.setTextSize(16);
-            minus.setMinHeight(shell.dp(44));
-            minus.setPadding(0, 0, 0, 0);
-            minus.setEnabled(p.optInt("stock") > 0);
-            minus.setAlpha(minus.isEnabled() ? 1f : .45f);
-            minus.setContentDescription("Quitar 1 cupo a " + p.optString("name"));
-            TextView countLabel = shell.text(p.optInt("stock") + " cupos rápidos", 14, available ? NativeUi.GREEN : NativeUi.MUTED, true);
-            countLabel.setGravity(Gravity.CENTER);
-            TextView plus = ui.button("+", false, null, () -> adjustStock(shell, p, 1));
-            plus.setTextSize(16);
-            plus.setMinHeight(shell.dp(44));
-            plus.setPadding(0, 0, 0, 0);
-            plus.setEnabled(p.optInt("stock") < 9999);
-            plus.setContentDescription("Sumar 1 cupo a " + p.optString("name"));
-            stockRow.addView(minus, new LinearLayout.LayoutParams(shell.dp(50), shell.dp(44)));
-            stockRow.addView(countLabel, new LinearLayout.LayoutParams(0, -2, 1));
-            stockRow.addView(plus, new LinearLayout.LayoutParams(shell.dp(50), shell.dp(44)));
-            shell.add(c, stockRow, 10);
-
             c.setFocusable(true);
             c.setOnClickListener(v -> shell.go("detail", p.optString("id")));
             shell.add(content, c, 12);
         }
-        if (found == 0) shell.note("Aquí aparecerán tus productos. Empieza con uno.");
+        if (found == 0) {
+            String emptyMsg = catalogFilter == 2
+                    ? "Todavía no tienes combos. Crea uno con el botón '+ Combo'."
+                    : catalogFilter == 1
+                    ? "Todavía no tienes productos individuales."
+                    : "Aquí aparecerán tus productos y combos. Empieza con uno.";
+            shell.note(emptyMsg);
+        }
     }
 
     private static void adjustStock(AppShell shell, JSONObject p, int delta) {
@@ -102,40 +124,98 @@ final class ProductScreen {
             shell.go("products", "");
             return;
         }
+        boolean combo = isCombo(p);
+        boolean available = p.optBoolean("available") && p.optInt("stock") > 0;
+        JSONObject schedule = SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"));
+
+        // Foto principal
         ImageView photo = image(shell, p, 320, true);
         photo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         photo.setPadding(shell.dp(6), shell.dp(6), shell.dp(6), shell.dp(6));
         shell.add(content, photo, 0);
-        photo.getLayoutParams().height = shell.dp(240);
-        if (!ImageTools.hasProductPhoto(p)) shell.add(content, shell.text("ILUSTRACIÓN REFERENCIAL", 11, NativeUi.MUTED, true), 7);
-        shell.add(content, ui.heading(p.optString("name"), 28), 16);
-        shell.add(content, shell.text(shell.cash(p.optDouble("price")) + " " + unit(p), 24, NativeUi.WINE, true), 6);
-
-        LinearLayout details = shell.card();
-        shell.add(details, shell.text(p.optInt("stock") + " cupos · " + (p.optBoolean("available") ? "Disponible" : "En pausa"), 16, NativeUi.GREEN, true), 0);
-        shell.add(details, shell.text("Venta: " + SaleSchedule.day(SaleSchedule.forProduct(p, shell.data().optJSONObject("settings"))), 15, NativeUi.INK, true), 10);
-        if (!p.optString("portion").isEmpty()) shell.add(details, shell.text(p.optString("portion"), 16, NativeUi.INK, true), 8);
-        if (!p.optString("description").isEmpty()) shell.add(details, shell.text(p.optString("description"), 15, NativeUi.MUTED, false), 7);
-        shell.add(content, details, 18);
-
-        shell.add(content, ui.button("Editar producto", false, "edit", () -> {
-            if (!shell.checkPending(shell.currentId())) startEditor(shell, p);
-        }), 16);
-
-        if (p.optString("line").equals("commercial")) {
-            shell.add(content, shell.button("Crear un combo con este producto", false, () -> shell.go("promo", shell.currentId())), 10);
-            shell.primary("Crear publicación", () -> {
-                shell.publicationMessage(p.optString("description"));
-                shell.go("publish", shell.currentId());
-            });
+        photo.getLayoutParams().height = shell.dp(230);
+        if (!ImageTools.hasProductPhoto(p)) {
+            shell.add(content, shell.text("ILUSTRACIÓN REFERENCIAL", 11, NativeUi.MUTED, true), 6);
         }
-        shell.add(content, shell.button(p.optBoolean("available") ? "Pausar venta" : "Volver a ofrecer", false, () -> {
-            if (shell.checkPending(shell.currentId())) return;
-            JSONObject change = LocalStore.copy(p);
-            AppShell.put(change, "available", !p.optBoolean("available"));
-            shell.enqueue("product", change, "products");
-        }), 10);
-        shell.add(content, shell.button("Eliminar producto", false, () ->
+
+        // Encabezado con etiqueta de estado / tipo
+        LinearLayout badges = new LinearLayout(activity);
+        if (combo) {
+            TextView comboBadge = ui.chip("COMBO", NativeUi.WINE, NativeUi.GOLD);
+            comboBadge.setTextSize(11);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+            lp.rightMargin = shell.dp(8);
+            badges.addView(comboBadge, lp);
+        }
+        TextView stateBadge = ui.chip(
+                available ? "Disponible" : (p.optBoolean("available") ? "Sin cupos" : "En pausa"),
+                available ? NativeUi.GREEN : NativeUi.MUTED,
+                available ? 0xffe6f4ea : NativeUi.SOFT
+        );
+        stateBadge.setTextSize(11);
+        badges.addView(stateBadge);
+        shell.add(content, badges, 14);
+
+        shell.add(content, ui.heading(p.optString("name"), 26), 8);
+        shell.add(content, shell.text(shell.cash(p.optDouble("price")) + " " + unit(p), 22, NativeUi.WINE, true), 4);
+
+        // Tarjeta de información y ajuste rápido de cupos
+        LinearLayout details = shell.card();
+        shell.add(details, shell.text("PRÓXIMA VENTA", 11, NativeUi.MUTED, true), 0);
+        shell.add(details, shell.text(SaleSchedule.day(schedule), 16, NativeUi.INK, true), 3);
+        shell.add(details, shell.text(SaleSchedule.shortWindow(schedule), 14, NativeUi.MUTED, false), 2);
+
+        if (!p.optString("portion").isEmpty() || !p.optString("description").isEmpty()) {
+            shell.add(details, shell.text("DETALLE", 11, NativeUi.MUTED, true), 14);
+            if (!p.optString("portion").isEmpty()) {
+                shell.add(details, shell.text(p.optString("portion"), 15, NativeUi.INK, true), 3);
+            }
+            if (!p.optString("description").isEmpty() && !p.optString("description").equals(p.optString("portion"))) {
+                shell.add(details, shell.text(p.optString("description"), 14, NativeUi.MUTED, false), 4);
+            }
+        }
+
+        shell.add(details, shell.text("CUPOS DISPONIBLES", 11, NativeUi.MUTED, true), 14);
+        LinearLayout stockRow = new LinearLayout(activity);
+        stockRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView minus = ui.button("−", false, null, () -> adjustStock(shell, p, -1));
+        minus.setTextSize(18);
+        minus.setMinHeight(shell.dp(44));
+        minus.setPadding(0, 0, 0, 0);
+        minus.setEnabled(p.optInt("stock") > 0);
+        minus.setAlpha(minus.isEnabled() ? 1f : .45f);
+        minus.setContentDescription("Quitar 1 cupo a " + p.optString("name"));
+        TextView countLabel = shell.text(p.optInt("stock") + " cupos", 16, available ? NativeUi.GREEN : NativeUi.MUTED, true);
+        countLabel.setGravity(Gravity.CENTER);
+        TextView plus = ui.button("+", false, null, () -> adjustStock(shell, p, 1));
+        plus.setTextSize(18);
+        plus.setMinHeight(shell.dp(44));
+        plus.setPadding(0, 0, 0, 0);
+        plus.setEnabled(p.optInt("stock") < 9999);
+        plus.setContentDescription("Sumar 1 cupo a " + p.optString("name"));
+        stockRow.addView(minus, new LinearLayout.LayoutParams(shell.dp(52), shell.dp(44)));
+        stockRow.addView(countLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        stockRow.addView(plus, new LinearLayout.LayoutParams(shell.dp(52), shell.dp(44)));
+        shell.add(details, stockRow, 8);
+
+        shell.add(content, details, 16);
+
+        // Acciones agrupadas en 1 fila
+        shell.pair(content,
+                combo ? "Editar combo" : "Editar producto",
+                () -> {
+                    if (!shell.checkPending(shell.currentId())) startEditor(shell, p);
+                },
+                p.optBoolean("available") ? "Pausar venta" : "Volver a ofrecer",
+                () -> {
+                    if (shell.checkPending(shell.currentId())) return;
+                    JSONObject change = LocalStore.copy(p);
+                    AppShell.put(change, "available", !p.optBoolean("available"));
+                    shell.enqueue("product", change, "products");
+                });
+
+        // Eliminar separado al final
+        shell.add(content, shell.button(combo ? "Eliminar combo" : "Eliminar producto", false, () ->
                 new AlertDialog.Builder(activity)
                         .setTitle("¿Eliminar " + p.optString("name") + "?")
                         .setMessage("Se quitará del catálogo y de las ofertas. Los pedidos anteriores conservarán su información.")
@@ -146,11 +226,17 @@ final class ProductScreen {
                                 shell.screen("products");
                                 shell.currentId("");
                                 shell.render();
-                                shell.toast("Producto eliminado.");
+                                shell.toast("Eliminado del catálogo.");
                             } catch (Exception error) {
                                 shell.toast(error.getMessage());
                             }
                         }).show()), 10);
+
+        // Acción principal fija abajo
+        shell.primary("Crear publicación", () -> {
+            shell.publicationMessage(p.optString("description"));
+            shell.go("publish", shell.currentId());
+        });
     }
 
     static ImageView image(AppShell shell, JSONObject p, int size) {

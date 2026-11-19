@@ -329,10 +329,25 @@ final class AppShell {
     boolean isRoot() { return Arrays.asList("home", "publications", "products", "orders").contains(screen); }
 
     String destination() {
-        return screen.equals("publications") ? "publications"
-                : screen.equals("products") ? "products"
-                : screen.equals("orders") ? "orders"
-                : "home";
+        switch (screen) {
+            case "publications":
+            case "publish":
+            case "help":
+            case "photo":
+                return "publications";
+            case "products":
+            case "detail":
+            case "edit":
+            case "promo":
+                return "products";
+            case "orders":
+            case "order":
+            case "summary":
+            case "orderSchedule":
+                return "orders";
+            default:
+                return "home";
+        }
     }
 
     void changeTab(String target) {
