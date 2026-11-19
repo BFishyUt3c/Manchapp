@@ -1,14 +1,17 @@
 package pe.manchapp.beta;
 
+import android.net.Uri;
 import org.json.*;
 
 /** A destination belongs to a reservation, not to a live tracking session. */
 final class DeliveryDestination {
+    static String typeLabel(String type){switch(type){case "work":return "Trabajo";case "other":return "Otro lugar";default:return "Casa";}}
+    static String addressGeo(JSONObject order){String query=(order.optString("zone")+" "+order.optString("address")+" "+order.optString("reference")).trim();return "geo:0,0?q="+Uri.encode(query);}
     static JSONObject normalized(JSONObject details)throws JSONException{
         JSONObject value=new JSONObject(details.toString());
         String reference=value.optString("reference").trim(),legacy=value.optString("meeting").trim();
         if(!legacy.isEmpty()&&!reference.contains(legacy))reference+=(reference.isEmpty()?"":"\n")+legacy;
-        value.put("address",value.optString("address").trim()).put("reference",reference);value.remove("meeting");return value;
+        value.put("address",value.optString("address").trim()).put("reference",reference);if(value.optString("destinationType").isEmpty())value.put("destinationType","home");value.remove("meeting");return value;
     }
     static JSONObject point(double latitude,double longitude,float accuracy,long capturedAt)throws JSONException{
         JSONObject point=new JSONObject().put("latitude",latitude).put("longitude",longitude).put("accuracy",accuracy).put("capturedAt",capturedAt);
@@ -24,5 +27,5 @@ final class DeliveryDestination {
     }
     static String geo(JSONObject point){if(!validPoint(point))throw new IllegalArgumentException("Ubicación no válida.");return "geo:0,0?q="+point.optDouble("latitude")+","+point.optDouble("longitude");}
     static double distanceKm(JSONObject settings,JSONObject point){if(settings==null||!validPoint(point))return -1;double lat1=settings.optDouble("latitude",Double.NaN),lon1=settings.optDouble("longitude",Double.NaN);if(!Double.isFinite(lat1)||!Double.isFinite(lon1))return -1;double p1=Math.toRadians(lat1),p2=Math.toRadians(point.optDouble("latitude")),dLat=Math.toRadians(point.optDouble("latitude")-lat1),dLon=Math.toRadians(point.optDouble("longitude")-lon1);double a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(p1)*Math.cos(p2)*Math.sin(dLon/2)*Math.sin(dLon/2);return 6371*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
-    static String zoneForDistance(JSONObject settings,double km){JSONArray zones=settings==null?null:settings.optJSONArray("zones");double previous=0;for(int i=0;zones!=null&&i<zones.length();i++){JSONObject zone=zones.optJSONObject(i);double max=zone.optDouble("maxKm",0);if(zone.optBoolean("enabled")&&km>=previous&&km<=max)return zone.optString("id");previous=Math.max(previous,max);}return "";}
+    static String zoneForDistance(JSONObject settings,double km){JSONArray zones=settings==null?null:settings.optJSONArray("zones");double previous=0;for(int i=0;zones!=null&&i<zones.length();i++){JSONObject zone=zones.optJSONObject(i);double max=zone.optDouble("maxKm",2);if(zone.optBoolean("enabled")&&km>=previous&&km<=max)return zone.optString("id");previous=Math.max(previous,max);}return "";}
 }

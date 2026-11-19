@@ -30,11 +30,22 @@ final class OrderDraft {
             JSONObject zone=null;JSONArray zones=settings.optJSONArray("zones");for(int i=0;zones!=null&&i<zones.length();i++)if(zones.getJSONObject(i).optString("id").equals(details.optString("zoneId"))&&zones.getJSONObject(i).optBoolean("enabled"))zone=zones.getJSONObject(i);
             if(zone==null)throw new Exception("Elige un sector habilitado.");zoneName=zone.optString("name");fee=SaleRules.deliveryFee(subtotal,zone.optDouble("fee"),settings.optDouble("deliveryFreeFrom"));
         }
-        String id=UUID.randomUUID().toString();JSONObject order=new JSONObject();for(String key:new String[]{"customer","phone","zoneId","address","reference","deliveryLocation","source"})if(details.has(key))order.put(key,details.get(key));
-        order.put("id",id).put("requestId",id).put("storeId",catalog.optString("storeId")).put("items",items).put("subtotal",subtotal).put("fee",fee).put("total",SaleRules.money(subtotal+fee)).put("fulfillment",mode).put("payment",payment).put("zone",zoneName).put("paid",false).put("status",manual?"registered":"local").put("sendState","pending").put("version",manual?1:0).put("createdAt",now).put("source",manual?details.optString("source","presencial"):"app");
+        String id=UUID.randomUUID().toString();
+        String requestId=details.optString("requestId","").trim();if(requestId.isEmpty())requestId=id;
+        JSONObject order=new JSONObject();for(String key:new String[]{"customer","phone","zoneId","address","reference","destinationType","deliveryLocation","source"})if(details.has(key))order.put(key,details.get(key));
+        double total=SaleRules.money(subtotal+fee);
+        order.put("id",id).put("requestId",requestId).put("requestHash",requestHash(items,mode,payment,total,SaleSchedule.key(chosenSchedule))).put("storeId",catalog.optString("storeId")).put("items",items).put("subtotal",subtotal).put("fee",fee).put("total",total).put("fulfillment",mode).put("payment",payment).put("zone",zoneName).put("paid",false).put("status",manual?"registered":"local").put("sendState","pending").put("version",manual?1:0).put("createdAt",now).put("source",manual?details.optString("source","presencial"):"app");
         SaleSchedule.copyInto(order,chosenSchedule);order.put("pickup",settings.optString("pickup"));
         order.put("expected",new JSONObject().put("saleKey",SaleSchedule.key(chosenSchedule)).put("pickup",settings.optString("pickup")).put("subtotal",subtotal).put("fee",fee).put("total",order.optDouble("total")));
         if(mode.equals("pickup")){for(String key:new String[]{"address","reference","zoneId","meeting","deliveryLocation"})order.remove(key);}
         return order;
+    }
+    static String requestHash(JSONArray items,String mode,String payment,double total,String saleKey){
+        try{
+            StringBuilder raw=new StringBuilder(mode).append('|').append(payment).append('|').append(String.format(Locale.US,"%.2f",total)).append('|').append(saleKey);
+            for(int i=0;items!=null&&i<items.length();i++){JSONObject item=items.getJSONObject(i);raw.append('|').append(item.optString("productId")).append('x').append(item.optInt("quantity"));}
+            byte[] digest=java.security.MessageDigest.getInstance("SHA-256").digest(raw.toString().getBytes("UTF-8"));
+            StringBuilder hex=new StringBuilder();for(byte b:digest)hex.append(String.format(Locale.US,"%02x",b&0xff));return hex.toString();
+        }catch(Exception error){return "";}
     }
 }

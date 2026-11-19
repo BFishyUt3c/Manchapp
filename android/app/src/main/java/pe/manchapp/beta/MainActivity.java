@@ -1,346 +1,250 @@
 package pe.manchapp.beta;
 
-import android.app.*;
-import android.os.*;
-import android.content.*;
-import android.graphics.*;
-import android.graphics.drawable.GradientDrawable;
+import android.app.Activity;
+import android.content.Intent;
+import android.database.ContentObserver;
+import android.graphics.Bitmap;
 import android.net.Uri;
-import android.provider.MediaStore;
-import android.text.InputType;
-import android.view.*;
-import android.widget.*;
-import android.util.Base64;
-import org.json.*;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import org.json.JSONObject;
 import java.io.*;
-import java.net.*;
-import java.text.*;
-import java.util.*;
-import java.util.concurrent.*;
 
 public class MainActivity extends Activity {
-    private static final int WINE=NativeUi.WINE, CREAM=NativeUi.BG, INK=NativeUi.INK, MUTED=NativeUi.MUTED, LINE=NativeUi.LINE, GREEN=NativeUi.GREEN;
-    private final ExecutorService worker=Executors.newSingleThreadExecutor();
-    private final Handler handler=new Handler(Looper.getMainLooper());
-    private final NumberFormat currency=NumberFormat.getCurrencyInstance(new Locale("es","PE"));
-    private LocalStore store;
-    private JSONObject renderState;
-    private String orderDelivery="all",orderDate="",summaryDate="";
-    private NativeUi ui;
-    private final ImageTools images = new ImageTools();
-    private LinearLayout footer;
-    private ScrollView scroll;
-    private int flyerStyle=0;
-    private final ArrayList<String> flyerIds=new ArrayList<>();
-    private boolean flyerSquare=false;
-    private String pendingQr="";
-    private String publicationMessage="";
-    private final Set<String> knownOrders=new HashSet<>();
-    private boolean ordersLoaded=false;
-    private LinearLayout root, content;
-    private Typeface regular=Typeface.DEFAULT, bold=Typeface.DEFAULT_BOLD;
-    private String screen="home", currentId="", orderFilter="active", pickedImage="", photoFor="product";
-    private final ArrayList<String> history=new ArrayList<>();
-    private boolean syncing=false, online=false, resumed=false;
-    private ImageView photoPreview;
-    private JSONObject draft, saleDraft;
-    private final Map<String,EditText> fields=new HashMap<>();
-    private Spinner categorySpinner, unitSpinner;
-    private int editorStep=0;
-    private boolean editorMore=false;
-    private Switch availability;
-    private Uri cameraUri;
+    private static final Uri BRIDGE=Uri.parse("content://pe.manchapp.beta.bridge/catalog");
+    private AppShell shell;
+    private final Handler bridgeHandler=new Handler(Looper.getMainLooper());
+    private ContentObserver bridgeObserver;
+    private int bridgeOrders=-1;
 
-    @Override public void onCreate(Bundle state){super.onCreate(state);ui=new NativeUi(this);try{store=LocalStore.open(this);}catch(Exception error){RecoveryScreen.show(this,error);return;}regular=ui.regular;bold=ui.bold;
-        if(state!=null){if(state.getStringArrayList("flyerIds")!=null)flyerIds.addAll(state.getStringArrayList("flyerIds"));if(state.getStringArrayList("history")!=null)history.addAll(state.getStringArrayList("history"));flyerStyle=state.getInt("flyerStyle",0);flyerSquare=state.getBoolean("flyerSquare",false);publicationMessage=state.getString("publicationMessage","");screen=state.getString("screen","home");currentId=state.getString("id","");photoFor=state.getString("photoFor","product");editorStep=state.getInt("editorStep",0);editorMore=state.getBoolean("editorMore",false);try{File f=new File(getFilesDir(),"editor-draft.json");if(f.exists()){draft=new JSONObject(LocalStore.read(new CrossFile(f).openRead()));pickedImage=draft.optString("image");}}catch(Exception ignored){}}
-        if(state!=null)try{if(state.containsKey("saleDraft"))saleDraft=new JSONObject(state.getString("saleDraft"));}catch(Exception ignored){}
-        if(screen.equals("photo"))screen="edit";
-        if(draft==null)try{File f=new File(getFilesDir(),"editor-draft.json");if(f.exists())draft=new JSONObject(LocalStore.read(new CrossFile(f).openRead()));}catch(Exception ignored){}
-        getWindow().getDecorView().setSystemUiVisibility(0);getWindow().setStatusBarColor(NativeUi.DEEP);getWindow().setNavigationBarColor(WINE);render();}
-    @Override public void onResume(){super.onResume();resumed=true;if(store!=null&&root!=null)render();}
-    @Override public void onPause(){super.onPause();resumed=false;saveDraft();}
-    @Override public void onDestroy(){super.onDestroy();images.clear();worker.shutdownNow();}
-    private void saveDraft(){if(screen.equals("edit"))captureEditor();if(draft==null)return;android.util.AtomicFile file=new CrossFile(new File(getFilesDir(),"editor-draft.json"));FileOutputStream out=null;try{out=file.startWrite();out.write(draft.toString().getBytes("UTF-8"));file.finishWrite(out);}catch(Exception error){if(out!=null)file.failWrite(out);toast("No pudimos conservar el borrador. Intenta guardar antes de salir.");}}
-    @Override public void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);saveDraft();out.putStringArrayList("flyerIds",flyerIds);out.putStringArrayList("history",history);out.putInt("flyerStyle",flyerStyle);out.putBoolean("flyerSquare",flyerSquare);out.putString("publicationMessage",screen.equals("publish")?value("message"):publicationMessage);out.putString("screen",screen);out.putString("id",currentId);out.putString("photoFor",photoFor);out.putInt("editorStep",editorStep);out.putBoolean("editorMore",editorMore);if(saleDraft!=null)out.putString("saleDraft",saleDraft.toString());}
-    @Override public void onBackPressed(){if(screen.equals("edit")&&editorStep>0){captureEditor();editorStep=0;render();return;}if(screen.equals("edit")){captureEditor();saveDraft();toast("Borrador conservado. Puedes continuarlo desde Productos.");}if(history.isEmpty()){super.onBackPressed();return;}String[] previous=history.remove(history.size()-1).split("\\t",-1);screen=previous[0];currentId=previous.length>1?previous[1]:"";render();}
-    private int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+.5f);}
-    private GradientDrawable bg(int color,int stroke,int radius){GradientDrawable b=new GradientDrawable();b.setColor(color);b.setCornerRadius(dp(radius));if(stroke!=0)b.setStroke(dp(1),stroke);return b;}
-    private LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
-    private TextView text(String value,int size,int color,boolean heavy){TextView t=new TextView(this);t.setText(value);t.setTextSize(size);t.setTextColor(color);t.setTypeface(heavy?bold:regular);t.setLineSpacing(dp(3),1);return t;}
-    private void add(LinearLayout parent,View view,int top){LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(top);parent.addView(view,p);}
-    private TextView button(String label,boolean primary,Runnable action){return ui.button(label,primary,null,action);}
-    private LinearLayout card(){return ui.card();}
-    private void primary(String label,Runnable action){footer.removeAllViews();footer.setVisibility(View.VISIBLE);footer.addView(button(label,true,action),new LinearLayout.LayoutParams(-1,-2));}
-    private void pair(LinearLayout parent,String first,Runnable a,String second,Runnable b){LinearLayout row=new LinearLayout(this);TextView one=button(first,false,a),two=button(second,false,b);one.setTextSize(14);two.setTextSize(14);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);p.rightMargin=dp(8);row.addView(one,p);row.addView(two,new LinearLayout.LayoutParams(0,-2,1));add(parent,row,12);}
-    private void menu(String heading,String detail,String icon,Runnable action){LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(14),dp(16),dp(12),dp(16));row.setBackground(bg(NativeUi.CARD,LINE,16));TextView symbol=text("",16,WINE,true);symbol.setCompoundDrawablesWithIntrinsicBounds(new NativeUi.Icon(icon,WINE,dp(25)),null,null,null);row.addView(symbol,new LinearLayout.LayoutParams(dp(40),dp(34)));LinearLayout copy=column();copy.addView(text(heading,17,INK,true));add(copy,text(detail,13,MUTED,false),3);row.addView(copy,new LinearLayout.LayoutParams(0,-2,1));TextView arrow=text("",16,MUTED,true);arrow.setCompoundDrawablesWithIntrinsicBounds(new NativeUi.Icon("next",MUTED,dp(20)),null,null,null);row.addView(arrow);row.setFocusable(true);row.setContentDescription(heading+". "+detail);row.setOnClickListener(v->action.run());add(content,row,12);}
-    private void note(String value){TextView t=text(value,15,MUTED,false);add(content,t,12);}
-    private JSONObject data(){return renderState==null?store.snapshot():renderState;}
-    private JSONObject find(String array,String id){JSONArray all=data().optJSONArray(array);for(int i=0;all!=null&&i<all.length();i++)if(all.optJSONObject(i).optString("id").equals(id))return all.optJSONObject(i);return null;}
-    private String cash(double n){return currency.format(n);}
-    private void go(String next,String id){if(next.equals("publish")&&!screen.equals("publish")){flyerIds.clear();if(!id.isEmpty())flyerIds.add(id);}if(!screen.equals(next)||!currentId.equals(id))history.add(screen+"\t"+currentId);if(history.size()>30)history.remove(0);if(screen.equals("edit"))captureEditor();((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(root.getWindowToken(),0);screen=next;currentId=id;render();}
-    private void toast(String message){Toast.makeText(this,message,Toast.LENGTH_LONG).show();}
-    private String status(String s){switch(s){case "registered":case "confirmed":return "Pedido recibido";case "preparing":case "ready":case "sale_day":return "Día de venta";case "pickup_available":return "Disponible para recoger";case "delivering":return "Delivery salió";case "delivered":return "Entregado";case "cancelled":return "Cancelado";default:return s;}}
-
-    private boolean isRoot(){return Arrays.asList("home","publications","products","orders").contains(screen);}
-    private String destination(){return screen.equals("publications")?"publications":screen.equals("products")?"products":screen.equals("orders")?"orders":"home";}
-    private void changeTab(String target){if(screen.equals("edit")){captureEditor();saveDraft();}go(target,"");}
-    private void render(){
-        renderState=store.snapshot();try{
-        fields.clear();categorySpinner=null;unitSpinner=null;availability=null;photoPreview=null;
-        root=column();root.setBackgroundColor(CREAM);setContentView(root);
-        root.addView(ui.toolbar(isRoot()?"ManchApp":screenTitle(),isRoot()?"EMPRENDEDORA · "+data().optJSONObject("settings").optString("name"):"",isRoot()?null:()->onBackPressed(),isRoot()?()->go("settings",""):null));
-        scroll=new ScrollView(this);scroll.setFillViewport(true);content=column();content.setPadding(dp(18),dp(18),dp(18),dp(22));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        footer=column();footer.setPadding(dp(18),dp(9),dp(18),dp(10));footer.setBackgroundColor(CREAM);footer.setVisibility(View.GONE);root.addView(footer);
-        switch(screen){case "summary":showSummary();break;case "schedule":showSchedule(false);break;case "orderSchedule":showSchedule(true);break;case "home":showHome();break;case "products":showProducts();break;case "detail":showProduct();break;case "edit":showEditor();break;case "orders":showOrders();break;case "order":showOrder();break;case "settings":showSettings();break;case "profile":showProfile();break;case "delivery":showDelivery();break;case "payments":showPayments();break;case "qr":showQrPreview();break;case "help":showHelp();break;case "publish":showPublish();break;case "publications":showPublications();break;case "promo":showPromo();break;default:screen="home";showHome();}
-        root.addView(ui.navigation(new String[]{"home","publications","products","orders"},new String[]{"Inicio","Imágenes","Productos","Gestionar Ventas"},new String[]{"home","photo","food","orders"},destination(),id->changeTab(id)));
-    }finally{renderState=null;}
-    }
-    private void showHome(){
-        title("Tu espacio de venta","Programa, prepara y comparte cada jornada de Manka Kusi.");
-        menu("Programar una venta","Elige productos, fecha, cierre de reservas y horario de recojo","clock",()->openSchedule(false));
-        menu("Crear un afiche","Combina hasta cuatro productos y prepara una publicación","publish",()->selectProduct(false));
-        menu("Crear un combo","Define contenido, precio, cupos y fecha de venta","tag",()->selectProduct(true));
-    }
-    private String screenTitle(){switch(screen){case "summary":return "Resumen de jornada";case "schedule":case "orderSchedule":return "Fecha de venta";case "home":return "Inicio";case "settings":return "Manka Kusi";case "profile":return "Datos de Manka Kusi";case "delivery":return "Reparto cercano";case "payments":return "Pagos y QR";case "qr":return "Revisar mi QR";case "help":return "Ayuda para tus fotos";case "edit":return "Tu producto";case "detail":return "Producto";case "publish":return "Crear afiche";case "publications":return "Imágenes";case "promo":return "Crear combo";case "photo":return "Editar foto";default:return "Detalle del pedido";}}
-    private void title(String heading,String subtitle){TextView headingView=ui.heading(heading,27);if(Build.VERSION.SDK_INT>=28)headingView.setAccessibilityHeading(true);add(content,headingView,2);if(!subtitle.isEmpty())add(content,text(subtitle,16,MUTED,false),7);}
-    private void segmented(String[] names,int selected,java.util.function.IntConsumer onSelect){LinearLayout bar=new LinearLayout(this);bar.setPadding(dp(4),dp(4),dp(4),dp(4));bar.setBackground(bg(0xffe7bd91,0,12));for(int i=0;i<names.length;i++){final int index=i;TextView b=text(names[i],13,i==selected?WINE:MUTED,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(44));if(i==selected)b.setBackground(bg(NativeUi.GOLD,0,9));b.setOnClickListener(v->onSelect.accept(index));bar.addView(b,new LinearLayout.LayoutParams(0,-2,1));}add(content,bar,18);}
-    private void showProducts(){title("Lo que preparas","Productos y cupos para tu venta programada.");
-        add(content,ui.button("Agregar producto",true,"plus",()->startEditor(null)),20);
-        if(hasDraft())menu("Continuar con mi borrador",draft.optString("name").isEmpty()?"Producto todavía sin nombre":draft.optString("name"),"edit",()->{pickedImage=draft.optString("image");editorStep=0;go("edit",draft.optString("id"));});
-        JSONArray products=data().optJSONArray("products");int found=0;
-        for(int i=0;products!=null&&i<products.length();i++){JSONObject p=products.optJSONObject(i);if(!p.optString("line").equals("commercial"))continue;found++;LinearLayout c=card(),row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.addView(image(p,88),new LinearLayout.LayoutParams(dp(88),dp(94)));LinearLayout info=column();info.setPadding(dp(14),0,0,0);info.addView(text(p.optString("name"),18,INK,true));add(info,text(cash(p.optDouble("price"))+" "+unit(p),18,WINE,true),4);boolean available=p.optBoolean("available")&&p.optInt("stock")>0;add(info,text(available?p.optInt("stock")+" cupos":"No disponible",13,available?GREEN:MUTED,true),4);add(info,text("Venta: "+SaleSchedule.display(p.optString("saleDate"),true),12,MUTED,false),4);row.addView(info,new LinearLayout.LayoutParams(0,-2,1));TextView arrow=text("›",26,MUTED,false);row.addView(arrow);c.addView(row);c.setFocusable(true);c.setOnClickListener(v->go("detail",p.optString("id")));add(content,c,12);}
-        if(found==0)note("Aquí aparecerán tus productos. Empieza con uno.");
-    }
-    private ImageView image(JSONObject p,int size){return image(p,size,false);}
-    private ImageView image(JSONObject p,int size,boolean revealTransparency){ImageView result=new ImageView(this);result.setScaleType(ImageView.ScaleType.CENTER_CROP);result.setBackground(bg(0xffefe2d3,0,14));result.setClipToOutline(true);Bitmap bitmap=images.productThumbnail(this,p,dp(size));if(bitmap!=null){result.setImageBitmap(bitmap);if(revealTransparency&&ImageTools.hasTransparency(bitmap))result.setBackground(new PhotoUi.Checker(dp(10)));}else result.setImageDrawable(new DishArt(p.optString("illustration","papa")));result.setContentDescription(!ImageTools.hasProductPhoto(p)?"Ilustración referencial de "+p.optString("name"):"Foto de "+p.optString("name"));return result;}
-    private void showProduct(){JSONObject p=find("products",currentId);if(p==null||!p.optString("line").equals("commercial")){go("products","");return;}ImageView photo=image(p,320,true);photo.setScaleType(ImageView.ScaleType.FIT_CENTER);photo.setPadding(dp(6),dp(6),dp(6),dp(6));add(content,photo,0);photo.getLayoutParams().height=dp(240);if(!ImageTools.hasProductPhoto(p))add(content,text("ILUSTRACIÓN REFERENCIAL",11,MUTED,true),7);add(content,ui.heading(p.optString("name"),28),16);add(content,text(cash(p.optDouble("price"))+" "+unit(p),24,WINE,true),6);
-        LinearLayout details=card();add(details,text(p.optInt("stock")+" cupos · "+(p.optBoolean("available")?"Disponible":"En pausa"),16,GREEN,true),0);add(details,text("Venta: "+SaleSchedule.day(SaleSchedule.forProduct(p,data().optJSONObject("settings"))),15,INK,true),10);if(!p.optString("portion").isEmpty())add(details,text(p.optString("portion"),16,INK,true),8);if(!p.optString("description").isEmpty())add(details,text(p.optString("description"),15,MUTED,false),7);add(content,details,18);
-        add(content,ui.button("Editar producto",false,"edit",()->{if(!checkPending(currentId))startEditor(p);}),16);
-        if(p.optString("line").equals("commercial")){add(content,button("Crear un combo con este producto",false,()->go("promo",currentId)),10);primary("Crear publicación",()->{publicationMessage=p.optString("description");go("publish",currentId);});}
-        add(content,button(p.optBoolean("available")?"Pausar venta":"Volver a ofrecer",false,()->{if(checkPending(currentId))return;JSONObject change=LocalStore.copy(p);put(change,"available",!p.optBoolean("available"));enqueue("product",change,"products");}),10);
-        add(content,button("Eliminar producto",false,()->new AlertDialog.Builder(this).setTitle("¿Eliminar "+p.optString("name")+"?").setMessage("Se quitará del catálogo y de las ofertas. Los pedidos anteriores conservarán su información.").setNegativeButton("Conservar",null).setPositiveButton("Eliminar",(d,w)->{try{store.deleteProduct(p.optString("id"));screen="products";currentId="";render();toast("Producto eliminado.");}catch(Exception error){toast(error.getMessage());}}).show()),10);
-    }
-    private String unit(JSONObject p){return SaleRules.unit(p.optString("saleUnit",SaleRules.defaultUnit(p.optString("category"))));}
-    private boolean checkPending(String id){return false;}
-    private void startEditor(JSONObject product){
-        if(hasDraft()&&(product==null||!draft.optString("id").equals(product.optString("id")))){
-            new AlertDialog.Builder(this).setTitle("Tienes un borrador pendiente").setMessage((draft.optString("name").isEmpty()?"Producto sin nombre":draft.optString("name"))+"\nPuedes seguir completándolo o empezar otro producto.").setNegativeButton("Volver",null).setNeutralButton("Empezar otro",(d,w)->openEditor(product)).setPositiveButton("Continuar borrador",(d,w)->{pickedImage=draft.optString("image");editorStep=0;go("edit",draft.optString("id"));}).show();return;
-        }openEditor(product);
-    }
-    private void openEditor(JSONObject product){draft=product==null?new JSONObject():LocalStore.copy(product);put(draft,"line","commercial");pickedImage=draft.optString("image");editorStep=0;editorMore=false;go("edit",draft.optString("id"));}
-    private boolean hasDraft(){return draft!=null&&draft.optString("line","commercial").equals("commercial")&&(!draft.optString("name").isEmpty()||!draft.optString("image").isEmpty()||!draft.optString("price").isEmpty());}
-    private void openStudio(){saveDraft();startActivityForResult(new Intent(this,PhotoStudioActivity.class),87);}
-    private void useStudioPhoto(){new AlertDialog.Builder(this).setTitle("¿Dónde usarás la foto?").setItems(new String[]{"En un producto nuevo","En un producto que ya tengo"},(dialog,index)->{
-        if(index==0){attachStudioPhoto(null,false);return;}JSONArray products=data().optJSONArray("products");List<String> names=new ArrayList<>(),ids=new ArrayList<>();for(int i=0;products!=null&&i<products.length();i++){JSONObject product=products.optJSONObject(i);if(product.optString("line").equals("commercial")){names.add(product.optString("name"));ids.add(product.optString("id"));}}
-        if(names.isEmpty()){attachStudioPhoto(null,false);return;}new AlertDialog.Builder(this).setTitle("Elige el producto para esta foto").setItems(names.toArray(new String[0]),(d,choice)->{JSONObject selected=find("products",ids.get(choice));if(selected!=null&&!checkPending(selected.optString("id")))attachStudioPhoto(selected,false);}).setNegativeButton("Volver",null).show();
-    }).setNegativeButton("Seguir después",null).show();}
-    private void attachStudioPhoto(JSONObject product,boolean replace){
-        if(!replace&&hasDraft()&&(product==null||!draft.optString("id").equals(product.optString("id")))){new AlertDialog.Builder(this).setTitle("Ya tienes un producto en borrador").setMessage("Puedes usar la foto en ese borrador o reemplazarlo. La foto también seguirá disponible en Editar una foto.").setNegativeButton("Volver",null).setNeutralButton("Reemplazar borrador",(d,w)->attachStudioPhoto(product,true)).setPositiveButton("Usar en mi borrador",(d,w)->attachStudioPhoto(draft,true)).show();return;}
-        try{JSONObject photo=PhotoStudioActivity.read(this);String encoded=photo.getString("image");if(encoded.isEmpty())throw new IOException();if(!screen.equals("edit"))openEditor(product);else{draft=product==null?new JSONObject():LocalStore.copy(product);put(draft,"line","commercial");currentId=draft.optString("id");}pickedImage=encoded;put(draft,"image",encoded);put(draft,"_sourcePhoto",photo.optString("source",encoded));if(!photo.optString("compositionId").isEmpty()){put(draft,"_compositionId",photo.optString("compositionId"));put(draft,"_compositionHash",PhotoOriginals.digest(encoded));}put(draft,"imageReference",false);editorStep=0;screen="edit";saveDraft();render();toast("Foto añadida al borrador. Revisa y guarda el producto cuando esté listo.");}catch(Exception error){toast("No pudimos usar esa foto. Sigue disponible en Editar una foto.");}
-    }
-    private void showEditor(){
-        if(draft!=null&&!draft.optString("line","commercial").equals("commercial")){go("products","");return;}if(draft==null)draft=new JSONObject();fields.clear();categorySpinner=null;availability=null;photoPreview=null;
-        title(currentId.isEmpty()?"Agregar producto":"Editar producto",editorStep==0?"1. Foto y datos de tu producto":"2. Revisa antes de guardar");
-        if(editorStep==0){
-            if(!pickedImage.isEmpty()||ImageTools.hasProductPhoto(draft)){
-                photoPreview=image(draft,320,true);photoPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);photoPreview.setPadding(dp(6),dp(6),dp(6),dp(6));photoPreview.setContentDescription("Vista previa completa de la foto del producto");add(content,photoPreview,14);photoPreview.getLayoutParams().height=dp(220);
-                add(content,ui.button("Recortar y mejorar foto",false,"edit",()->improvePhoto()),10);
-            }else add(content,ui.message("Puedes empezar por la foto","La foto es opcional. Puedes elegirla y editarla antes de escribir los datos.",NativeUi.GOLD),14);
-            pair(content,"Tomar foto",()->choosePhoto("product",true),"Elegir foto",()->choosePhoto("product",false));
-            field("name","¿Qué vas a ofrecer?",draft.optString("name"),"Ejemplo: Papa rellena",false);
-            field("price","Precio de venta (S/)",draft.optString("price"),"Ejemplo: 6.50",true);
-            add(content,text("¿Qué recibe por ese precio?",15,INK,true),15);String[] unitCodes={"unit","portion","combo","cup"};unitSpinner=spinner(new String[]{"Una unidad","Una porción","Un combo","Una taza"},Math.max(0,Arrays.asList(unitCodes).indexOf(draft.optString("saleUnit",SaleRules.defaultUnit(draft.optString("category"))))));unitSpinner.setContentDescription("Presentación del producto");add(content,unitSpinner,6);
-            field("stock","¿Cuántas unidades ofrecerás en esta venta?",draft.optString("stock"),"Ejemplo: 20",true).setInputType(InputType.TYPE_CLASS_NUMBER);
-            field("description","Texto que verá el cliente",draft.optString("description"),"Ejemplo: Papa doradita con relleno y salsa criolla",false);
-            field("extraText","Texto o notas adicionales",draft.optString("extraText"),"Ejemplo: Solo para recojo en la olla",false);
-            note("Escribe solo el número en precio y cantidad.");
-            primary("Continuar",()->{JSONObject value=editorDraft();if(value==null)return;draft=value;editorStep=1;render();});
+    @Override public void onCreate(Bundle state) {
+        super.onCreate(state);
+        NativeUi ui = new NativeUi(this);
+        LocalStore store;
+        try {
+            store = LocalStore.open(this);
+        } catch (Exception error) {
+            RecoveryScreen.show(this, error);
             return;
         }
-        LinearLayout summary=card();add(summary,text(draft.optString("name"),21,INK,true),0);add(summary,text(cash(draft.optDouble("price"))+" "+unit(draft)+" · "+draft.optInt("stock")+" unidades",16,WINE,true),6);
-        if(!draft.optString("extraText","").isEmpty())add(summary,text(draft.optString("extraText"),14,MUTED,false),4);
-        add(content,summary,18);
-        photoPreview=image(draft,240,true);if(!pickedImage.isEmpty()){JSONObject photo=new JSONObject();put(photo,"image",pickedImage);photoPreview=image(photo,240,true);}photoPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);photoPreview.setPadding(dp(6),dp(6),dp(6),dp(6));photoPreview.setContentDescription("Vista previa completa de la foto del producto");add(content,photoPreview,17);photoPreview.getLayoutParams().height=dp(190);
-        add(content,button("Cambiar o editar la foto",false,()->{captureEditor();editorStep=0;render();}),10);
-        add(content,button("Elegir una ilustración",false,()->imageBank()),10);
-        if(PhotoOriginals.has(this,draft.optString("id")))add(content,button("Recuperar foto original",false,()->{try{pickedImage=PhotoOriginals.read(this,draft.optString("id"));put(draft,"image",pickedImage);put(draft,"imageReference",false);render();toast("Foto original recuperada. Revisa y guarda el producto.");}catch(Exception error){toast("No pudimos recuperar esa foto.");}}),8);
-        add(content,ui.message("Una foto que abra el apetito","Luz de día · plato completo · fondo despejado. Usa una foto de tu producto cuando la tengas.",NativeUi.GOLD),12);
-        field("portion","Porción o contenido (opcional)",draft.optString("portion"),"Ejemplo: una papa con salsa criolla",false);
-        add(content,ui.message("Venta programada",SaleSchedule.day(SaleSchedule.forProduct(draft,data().optJSONObject("settings")))+"\nPuedes asignar otra fecha desde Inicio → Programar una venta.",NativeUi.GOLD),16);
-        add(content,button(editorMore?"Ocultar otros datos":"Elegir categoría y disponibilidad",false,()->{captureEditor();editorMore=!editorMore;render();}),16);
-        if(editorMore){
-            String[] categories={"Salados","Antojitos","Postres","Bebidas","Combos"};int index=Arrays.asList(categories).indexOf(draft.optString("category"));TextView categoryLabel=text("Tipo de producto",15,INK,true);add(content,categoryLabel,16);categorySpinner=spinner(categories,Math.max(0,index));categorySpinner.setId(View.generateViewId());categoryLabel.setLabelFor(categorySpinner.getId());add(content,categorySpinner,6);
-            availability=new Switch(this);availability.setText("Disponible para ofrecer");availability.setTextColor(INK);availability.setTextSize(16);availability.setTypeface(regular);availability.setChecked(draft.optBoolean("available",true));availability.setMinHeight(dp(52));add(content,availability,10);
+        shell = new AppShell(this, ui, store);
+        if (state != null) {
+            if (state.getStringArrayList("flyerIds") != null) shell.flyerIds.addAll(state.getStringArrayList("flyerIds"));
+            if (state.getStringArrayList("history") != null) shell.history().addAll(state.getStringArrayList("history"));
+            shell.flyerStyle(state.getInt("flyerStyle", 0));
+            shell.flyerFormat(state.containsKey("flyerFormat") ? state.getInt("flyerFormat", 0) : (state.getBoolean("flyerSquare", false) ? 1 : 0));
+            shell.publicationMessage(state.getString("publicationMessage", ""));
+            shell.screen(state.getString("screen", "home"));
+            shell.currentId(state.getString("id", ""));
+            shell.photoFor(state.getString("photoFor", "product"));
+            shell.editorMore(state.getBoolean("editorMore", false));
+            try {
+                File f = new File(getFilesDir(), "editor-draft.json");
+                if (f.exists()) {
+                    JSONObject draft = new JSONObject(LocalStore.read(new CrossFile(f).openRead()));
+                    shell.setDraft(draft);
+                    shell.pickedImage(draft.optString("image"));
+                }
+            } catch (Exception ignored) {}
+            try {
+                if (state.containsKey("saleDraft")) shell.setSaleDraft(new JSONObject(state.getString("saleDraft")));
+            } catch (Exception ignored) {}
         }
-        primary("Revisar y guardar",()->{
-            if(syncing){toast("Espera un momento mientras actualizamos.");return;}JSONObject value=editorDraft();if(value==null)return;
-            String detail=value.optString("name")+"\n"+cash(value.optDouble("price"))+" "+unit(value)+"\n"+value.optInt("stock")+" unidades"+(value.optString("hours").isEmpty()?"":"\n"+value.optString("hours"));
-            new AlertDialog.Builder(this).setTitle("¿Están bien estos datos?").setMessage(detail).setNegativeButton("Volver a revisar",null).setPositiveButton("Guardar producto",(d,w)->{String sourcePhoto=value.optString("_sourcePhoto"),compositionId=compositionFor(value);value.remove("_sourcePhoto");value.remove("_compositionId");value.remove("_compositionHash");if(enqueue("product",value,"products")){if(!compositionId.isEmpty())try{PhotoOriginals.linkComposition(this,value.optString("id"),value.optString("image"),compositionId);}catch(Exception error){toast("El producto se guardó, pero no pudimos vincular su composición editable.");}if(!sourcePhoto.isEmpty())try{PhotoOriginals.replace(this,value.optString("id"),sourcePhoto);}catch(Exception error){toast("El producto se guardó, pero no pudimos conservar su foto original.");}draft=null;new File(getFilesDir(),"editor-draft.json").delete();}}).show();
-        });
-        note("Al guardar se conserva en este celular. El aviso te indicará si todavía falta publicarlo.");
-    }
-    private void captureEditor(){if(draft==null)draft=new JSONObject();for(String id:new String[]{"name","price","stock","hours","description","portion","extraText"})if(fields.containsKey(id))put(draft,id,value(id));put(draft,"image",pickedImage);if(unitSpinner!=null)put(draft,"saleUnit",new String[]{"unit","portion","combo","cup"}[unitSpinner.getSelectedItemPosition()]);if(categorySpinner!=null)put(draft,"category",categorySpinner.getSelectedItem().toString());if(availability!=null)put(draft,"available",availability.isChecked());}
-    private void editorError(String id,String message){EditText field=fields.get(id);if(field!=null){field.setError(message);field.requestFocus();field.announceForAccessibility(message);}else toast(message);}
-    private JSONObject editorDraft(){
-        captureEditor();JSONObject value=LocalStore.copy(draft);if(value.optString("name").length()<2){editorError("name","Escribe el nombre del producto. Ejemplo: Papa rellena.");return null;}
-        double amount;try{amount=Double.parseDouble(value.optString("price").replace(',','.'));if(Double.isNaN(amount)||Double.isInfinite(amount)||amount<=0||amount>10000)throw new NumberFormatException();}catch(Exception e){editorError("price","Escribe un precio mayor que cero. Ejemplo: 6.50.");return null;}
-        int stock;try{String quantity=value.optString("stock");if(!quantity.matches("[0-9]+"))throw new NumberFormatException();stock=Integer.parseInt(quantity);if(stock>10000)throw new NumberFormatException();}catch(Exception e){editorError("stock","Escribe una cantidad sin decimales. Ejemplo: 20.");return null;}
-        put(value,"price",amount);put(value,"stock",stock);put(value,"line","commercial");put(value,"category",value.optString("category","Salados"));put(value,"available",value.optBoolean("available",true));if(value.optString("id").isEmpty())put(value,"id",UUID.randomUUID().toString());if(!value.has("version"))put(value,"version",0);JSONObject defaults=data().optJSONObject("settings");for(String key:SaleSchedule.KEYS)if(!value.has(key)&&defaults.has(key))put(value,key,defaults.opt(key));return value;
-    }
-    private EditText field(String id,String label,String value,String placeholder,boolean numeric){TextView labelView=text(label,15,INK,true);add(content,labelView,16);EditText e=new EditText(this);e.setId(View.generateViewId());labelView.setLabelFor(e.getId());e.setSingleLine(true);e.setTextSize(18);e.setTypeface(regular);e.setTextColor(INK);e.setHintTextColor(MUTED);e.setHint(placeholder);e.setPadding(dp(13),dp(13),dp(13),dp(13));e.setBackground(bg(NativeUi.CARD,LINE,14));e.setMinHeight(dp(56));e.setInputType(numeric?InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL:InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);if(Arrays.asList("pickup","hours","description","message","portion").contains(id)){e.setSingleLine(false);e.setMinLines(2);e.setMaxLines(5);e.setGravity(Gravity.TOP);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES|InputType.TYPE_TEXT_FLAG_MULTI_LINE);}e.setText(value);fields.put(id,e);add(content,e,6);return e;}
-    private String value(String id){EditText f=fields.get(id);return f==null?"":f.getText().toString().trim();}
-    private Spinner spinner(String[] values,int index){Spinner s=new Spinner(this);ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,values);s.setAdapter(adapter);s.setSelection(index);s.setMinimumHeight(dp(48));s.setBackground(bg(NativeUi.CARD,LINE,12));return s;}
-
-    private void showOrders(){title("Gestionar ventas","Pedidos, cupos y entregas en un solo lugar.");JSONArray products=data().optJSONArray("products"),orders=data().optJSONArray("orders");int units=0,attention=0;for(int i=0;products!=null&&i<products.length();i++){JSONObject product=products.optJSONObject(i);if(product.optString("line").equals("commercial")&&product.optBoolean("available"))units+=product.optInt("stock");}for(int i=0;orders!=null&&i<orders.length();i++)if(!Arrays.asList("delivered","cancelled").contains(orders.optJSONObject(i).optString("status")))attention++;
-        
-        LinearLayout stats=new LinearLayout(this);stats.setPadding(0, dp(8), 0, dp(8));
-        LinearLayout stock=ui.message(String.valueOf(units),"Cupos",NativeUi.CARD),pendingBox=ui.message(String.valueOf(attention),"Pendientes",NativeUi.GOLD);
-        LinearLayout.LayoutParams left=new LinearLayout.LayoutParams(0,-1,1);left.rightMargin=dp(10);stats.addView(stock,left);stats.addView(pendingBox,new LinearLayout.LayoutParams(0,-1,1));add(content,stats,16);
-        
-        LinearLayout quickActions = new LinearLayout(this);
-        quickActions.addView(ui.button("Registrar Pedido", true, "plus", ()->startManual(null)), new LinearLayout.LayoutParams(0, -2, 1));
-        View spacer = new View(this); quickActions.addView(spacer, new LinearLayout.LayoutParams(dp(12), 1));
-        quickActions.addView(ui.button("Resumen", false, "orders", ()->go("summary","")), new LinearLayout.LayoutParams(0, -2, 1));
-        add(content, quickActions, 12);
-
-        showOrderFilters();segmented(new String[]{"Por atender","Terminados"},orderFilter.equals("active")?0:1,i->{orderFilter=i==0?"active":"finished";render();});
-        int count=0;
-        for(int i=0;orders!=null&&i<orders.length();i++){JSONObject o=orders.optJSONObject(i);if(!visibleOrder(o))continue;boolean ended=o.optString("status").equals("delivered")||o.optString("status").equals("cancelled");if(ended!=orderFilter.equals("finished"))continue;count++;LinearLayout c=card();add(c,text("Pedido "+String.format(Locale.US,"%03d",o.optInt("number"))+" · "+o.optString("customer"),18,INK,true),0);add(c,text(status(o.optString("status")),14,WINE,true),7);add(c,text("Venta: "+SaleSchedule.day(o),14,INK,true),7);add(c,text((o.optString("fulfillment").equals("delivery")?"Delivery · "+o.optString("zone"):"Para recoger")+" · "+cash(o.optDouble("total")),14,MUTED,false),7);add(c,text(o.optBoolean("paid")?"Pago confirmado":"Pago pendiente",12,o.optBoolean("paid")?GREEN:0xff8a6425,true),6);add(c,button("Ver pedido  →",false,()->go("order",o.optString("id"))),13);add(content,c,14);}
-        if(count==0){LinearLayout c=card();add(c,text("Todavía no hay pedidos aquí",19,INK,true),0);add(c,text("Cuando recibas un pedido, aquí verás su fecha de venta y podrás registrar la salida del delivery o habilitar el recojo.",15,MUTED,false),10);add(content,c,22);}
-    }
-    private void showOrder(){
-        JSONObject order=find("orders",currentId);if(order==null){go("orders","");return;}
-        title("Pedido "+String.format(Locale.US,"%03d",order.optInt("number")),order.optString("customer")+" · "+order.optString("phone"));
-        LinearLayout food=card();add(food,text("ESTADO DEL PEDIDO",12,WINE,true),0);add(food,ui.heading(status(order.optString("status")),24),6);JSONArray items=order.optJSONArray("items");for(int i=0;items!=null&&i<items.length();i++){JSONObject item=items.optJSONObject(i);add(food,text(item.optInt("quantity")+" × "+item.optString("name")+" · "+cash(item.optDouble("price")*item.optInt("quantity")),16,INK,false),10);}add(food,text("Entrega: "+(order.optString("fulfillment").equals("delivery")?(order.optBoolean("deliveryOffer")?"Gratis por promoción":cash(order.optDouble("fee"))):"Recojo sin costo"),14,MUTED,false),12);add(food,text("Total "+cash(order.optDouble("total")),24,WINE,true),10);add(content,food,16);
-        add(content,ui.message("DÍA DE VENTA",SaleSchedule.day(order),NativeUi.GOLD),14);
-        if(!order.optString("fulfillment").equals("delivery"))add(content,ui.message("PUEDES RECOGER",SaleSchedule.window(order),NativeUi.CARD),12);
-        if(!Arrays.asList("delivering","delivered","cancelled","pickup_available").contains(order.optString("status")))menu("Fecha y recojo de este pedido","Revisar o agregar fechas acordadas con el cliente","clock",()->openSchedule(true));
-        LinearLayout payment=card();String method=order.optString("payment");add(payment,text("PAGO · "+(method.equals("cash")?"EFECTIVO":method.equals("yape")?"YAPE":"PLIN"),12,WINE,true),0);add(payment,text(order.optBoolean("paid")?"Pago confirmado":"Pago pendiente",21,order.optBoolean("paid")?GREEN:WINE,true),7);add(payment,text("El estado del pedido y el pago se confirman por separado.",14,MUTED,false),7);
-        boolean pending=store.hasPending(currentId);String state=order.optString("status");
-        if(!state.equals("cancelled"))add(payment,button(order.optBoolean("paid")?"Corregir estado del pago":"Confirmar dinero recibido",false,()->new AlertDialog.Builder(this).setTitle(order.optBoolean("paid")?"¿Marcar pago pendiente?":"¿Ya recibiste el dinero?").setMessage("Revisa el efectivo o el abono antes de confirmar.").setNegativeButton("Volver",null).setPositiveButton("Confirmar",(d,w)->{if(checkPending(currentId))return;JSONObject change=orderChange(order);put(change,"paid",!order.optBoolean("paid"));enqueue("order",change,"order");}).show()),12);add(content,payment,12);if(SaleRules.validPhone(order.optString("phone")))add(content,ui.button("Llamar al cliente",false,null,()->{try{startActivity(new Intent(Intent.ACTION_DIAL,Uri.parse("tel:"+order.optString("phone"))));}catch(Exception error){toast("No hay una aplicación de llamadas disponible.");}}),12);
-        boolean delivery=order.optString("fulfillment").equals("delivery");String place=delivery?order.optString("zone")+"\n"+order.optString("address")+"\nReferencia: "+order.optString("reference"):order.optString("pickup",data().optJSONObject("settings").optString("pickup"));LinearLayout arrival=ui.message(delivery?"REPARTO A COORDINAR":"RECOJO EN LA OLLA",place,NativeUi.CARD);if(!order.optString("driver").isEmpty())add(arrival,text("Reparte: "+order.optString("driver"),16,GREEN,true),10);if(!order.optString("deliveryWindow").isEmpty())add(arrival,text("Horario acordado: "+order.optString("deliveryWindow"),15,INK,true),8);if(delivery&&!Arrays.asList("delivered","cancelled").contains(state))add(arrival,button("Organizar reparto",false,()->editDispatch(order)),12);add(content,arrival,12);JSONObject deliveryPoint=order.optJSONObject("deliveryLocation");if(order.optString("fulfillment").equals("delivery")&&DeliveryDestination.validPoint(deliveryPoint)){LinearLayout point=ui.message("UBICACIÓN DE ENTREGA","Punto confirmado al reservar · precisión aproximada: "+Math.round(deliveryPoint.optDouble("accuracy"))+" m",NativeUi.CARD);add(point,ui.button("Abrir ubicación",false,"pin",()->{try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(DeliveryDestination.geo(deliveryPoint))));}catch(Exception error){toast("No hay una aplicación de mapas disponible.");}}),10);add(content,point,12);}
-        if(pending)add(content,ui.message("Cambios guardados","La aplicación de clientes los verá al actualizar este pedido en el mismo celular.",NativeUi.GOLD),12);
-        String next=SaleSchedule.next(state,delivery),label=next.equals("sale_day")?"Marcar día de venta":next.equals("delivering")?"El delivery salió":next.equals("pickup_available")?"Habilitar recojo":"Marcar como entregado";
-        if(!next.isEmpty()){final String target=next;primary(label,()->{if(checkPending(currentId))return;try{SaleSchedule.checkTransition(order,target,System.currentTimeMillis());}catch(Exception error){toast(error.getMessage());return;}if(target.equals("delivering")){EditText name=new EditText(this);name.setHint("Nombre de quien hará el reparto");AlertDialog dialog=new AlertDialog.Builder(this).setTitle("¿Quién lo entrega?").setView(name).setNegativeButton("Volver",null).setPositiveButton("Confirmar salida",null).create();dialog.setOnShowListener(v->dialog.getButton(-1).setOnClickListener(view->{String value=name.getText().toString().trim();if(value.length()<2){name.setError("Escribe el nombre de quien reparte.");return;}JSONObject change=orderChange(order);put(change,"status",target);put(change,"driver",value);if(enqueue("order",change,"order"))dialog.dismiss();}));dialog.show();}else{JSONObject change=orderChange(order);put(change,"status",target);enqueue("order",change,"order");}});}
-        if(!Arrays.asList("delivering","delivered","cancelled").contains(state))add(content,button("Cancelar este pedido",false,()->new AlertDialog.Builder(this).setTitle("¿Cancelar el pedido?").setMessage("Revisa con el cliente antes de cancelar. Los cupos volverán a quedar disponibles.").setNegativeButton("Conservar pedido",null).setPositiveButton("Sí, cancelar",(d,w)->{if(checkPending(currentId))return;JSONObject change=orderChange(order);put(change,"status","cancelled");enqueue("order",change,"orders");}).show()),16);
-    }
-    private JSONObject orderChange(JSONObject o){JSONObject value=new JSONObject();put(value,"id",o.optString("id"));put(value,"version",o.optInt("version"));return value;}
-
-
-    private void openSchedule(boolean forOrder){JSONObject current=forOrder?find("orders",currentId):null;saleDraft=SaleSchedule.editable(current!=null&&current.has("saleDate")?current:data().optJSONObject("settings"));if(!forOrder)put(saleDraft,"productIds",new JSONArray());go(forOrder?"orderSchedule":"schedule",currentId);}
-    private JSONArray scheduledProductIds(){return saleDraft==null?new JSONArray():saleDraft.optJSONArray("productIds")==null?new JSONArray():saleDraft.optJSONArray("productIds");}
-    private void chooseScheduleProducts(){JSONArray products=data().optJSONArray("products"),selected=scheduledProductIds();ArrayList<String> ids=new ArrayList<>(),labels=new ArrayList<>();for(int i=0;products!=null&&i<products.length();i++){JSONObject product=products.optJSONObject(i);if(product.optString("line").equals("commercial")){ids.add(product.optString("id"));labels.add(product.optString("name"));}}if(ids.isEmpty()){toast("Primero agrega un producto.");return;}boolean[] checked=new boolean[ids.size()];for(int i=0;i<ids.size();i++)for(int j=0;j<selected.length();j++)if(ids.get(i).equals(selected.optString(j)))checked[i]=true;AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Productos de esta venta").setMultiChoiceItems(labels.toArray(new String[0]),checked,null).setNegativeButton("Volver",null).setPositiveButton("Usar productos",null).create();dialog.setOnShowListener(v->dialog.getButton(-1).setOnClickListener(button->{JSONArray chosen=new JSONArray();for(int i=0;i<checked.length;i++)if(dialog.getListView().isItemChecked(i))chosen.put(ids.get(i));if(chosen.length()==0){toast("Elige al menos un producto.");return;}if(selected.length()==0){JSONObject first=find("products",chosen.optString(0));JSONObject schedule=SaleSchedule.forProduct(first,data().optJSONObject("settings"));for(String key:SaleSchedule.KEYS)if(schedule.has(key))put(saleDraft,key,schedule.opt(key));}put(saleDraft,"productIds",chosen);dialog.dismiss();render();}));dialog.show();}
-    private void showSchedule(boolean forOrder){
-        if(forOrder&&find("orders",currentId)==null){go("orders","");return;}if(saleDraft==null)saleDraft=SaleSchedule.editable(data().optJSONObject("settings"));
-        if(!forOrder){JSONArray ids=scheduledProductIds();add(content,ui.button("Elegir productos ("+ids.length()+")",true,"products",()->chooseScheduleProducts()),0);if(ids.length()>0){ArrayList<String> names=new ArrayList<>();for(int i=0;i<ids.length();i++){JSONObject product=find("products",ids.optString(i));if(product!=null)names.add(product.optString("name"));}add(content,ui.message("Productos de esta jornada",android.text.TextUtils.join(" · ",names),NativeUi.GOLD),12);}}
-        ScheduleEditor.draw(this,ui,content,saleDraft,()->render());
-        if(forOrder)note("Estos cambios solo corresponden a este pedido. Acuerda las fechas con el cliente.");
-        if(!forOrder)note("Los cupos de los productos se editan en Productos. Cambiar de fecha no repone ni aumenta cantidades.");
-        primary(forOrder?"Guardar fechas del pedido":"Guardar jornada",()->{
-            String error=SaleSchedule.invalid(saleDraft);if(!error.isEmpty()){toast(error);return;}
-            if(saleDraft.optBoolean("salesOpen")&&SaleSchedule.parse(saleDraft.optString("pickupUntil"),false)<=System.currentTimeMillis()){toast("Elige un intervalo futuro o pausa las reservas.");return;}
-            if(!forOrder){try{store.saveSchedule(scheduledProductIds(),saleDraft);saleDraft=null;screen="home";render();toast("Jornada guardada para los productos elegidos.");}catch(Exception errorSave){toast(errorSave.getMessage());}return;}
-            JSONObject change=orderChange(find("orders",currentId));for(String key:SaleSchedule.KEYS)try{change.put(key,saleDraft.get(key));}catch(JSONException fatal){throw new IllegalStateException(fatal);}put(change,"pickup",saleDraft.optString("pickup",data().optJSONObject("settings").optString("pickup")));if(enqueue("order",change,"order"))saleDraft=null;
-        });
-    }
-
-    private void showSettings(){JSONObject s=data().optJSONObject("settings");title("Configuración","Datos que aparecen en productos, pedidos y afiches.");LinearLayout c=card();add(c,text(s.optString("name"),22,WINE,true),0);add(c,text("Emprendimiento de la olla común · Manchay",14,MUTED,false),6);add(content,c,18);
-        menu("Datos de Manka Kusi","Nombre, punto de recojo, contacto y referencia","products",()->go("profile",""));
-        menu("Reparto cercano","Cobertura hasta 2 km y tarifas","truck",()->go("delivery",""));
-        menu("Pagos y QR","Yape, Plin y confirmación manual","pay",()->go("payments",""));
-        menu("Guardar copia de seguridad","Conserva productos, pedidos y cambios pendientes en un archivo","orders",()->exportBackup());
-        menu("Ayuda para tus fotos","Consejos sencillos antes de editar","help",()->go("help",""));
-    }
-    private void showProfile(){JSONObject s=data().optJSONObject("settings");title("Así encontrarán a Manka Kusi","Estos datos aparecen en el catálogo, pedidos y afiches.");field("name","Nombre del emprendimiento",s.optString("name"),"Nombre",false);field("pickup","Lugar de recojo y referencia",s.optString("pickup"),"Indica un punto fácil de reconocer",false);add(content,ui.message("UBICACIÓN DE REFERENCIA","-12.150786, -76.889562\nFrente a la Institución Educativa Los Jardines de Manchay",NativeUi.GOLD),12);field("phone","Celular de contacto",s.optString("phone"),"9 dígitos, empieza con 9",false).setInputType(InputType.TYPE_CLASS_PHONE);field("hours","Información de atención",s.optString("hours"),"Días y horas",false);
-        primary("Guardar datos",()->{if(value("name").length()<2){editorError("name","Escribe el nombre del emprendimiento.");return;}if(value("pickup").length()<4){editorError("pickup","Indica el lugar de recojo y una referencia.");return;}if(!value("phone").isEmpty()&&!value("phone").matches("9[0-9]{8}")){editorError("phone","Escribe 9 dígitos, empezando con 9.");return;}JSONObject settings=data().optJSONObject("settings");for(String key:new String[]{"name","pickup","phone","hours"})put(settings,key,value(key));enqueue("settings",settings,"settings");});
-    }
-    private void showDelivery(){JSONObject s=data().optJSONObject("settings");title("Delivery cercano","La cobertura del prototipo llega como máximo a 2 km desde Manka Kusi.");JSONArray zones=s.optJSONArray("zones");for(int i=0;zones!=null&&i<zones.length();i++){JSONObject z=zones.optJSONObject(i);final int index=i;menu(z.optString("name")+" · "+cash(z.optDouble("fee")),z.optBoolean("enabled")?"Habilitado · tocar para cambiar tarifa":"Sin cobertura · tocar para habilitar","pin",()->editZone(index));}add(content,ui.heading("Promoción de reparto",21),25);note("Si desean ofrecer delivery gratis desde un monto, pueden configurarlo aquí.");field("deliveryFreeFrom","Compra mínima para delivery gratis (S/)",String.valueOf(s.optDouble("deliveryFreeFrom",0)),"0 para desactivar",true);primary("Guardar promoción",()->{try{double minimum=Double.parseDouble(value("deliveryFreeFrom").replace(',','.'));if(!Double.isFinite(minimum)||minimum<0||minimum>10000)throw new Exception();JSONObject settings=data().optJSONObject("settings");put(settings,"deliveryFreeFrom",minimum);enqueue("settings",settings,"delivery");}catch(Exception error){editorError("deliveryFreeFrom","Escribe un monto entre 0 y 10000.");}});}
-
-    private File qrDraftFile(){return new File(getFilesDir(),"pending-qr.txt");}
-    private void rememberQr(String encoded)throws IOException{
-        android.util.AtomicFile file=new CrossFile(qrDraftFile());FileOutputStream out=null;
-        try{out=file.startWrite();out.write(encoded.getBytes("UTF-8"));file.finishWrite(out);}
-        catch(IOException error){if(out!=null)file.failWrite(out);throw error;}
-    }
-    private void showPayments(){
-        JSONObject settings=data().optJSONObject("settings");String encoded=settings.optString("paymentImage");
-        title("Pagos a tu manera","Yape, Plin o efectivo. Tú confirmas lo recibido.");
-        if(encoded.isEmpty()){
-            add(content,ui.message("Agrega tu QR cuando lo tengas","Elige una imagen desde tu celular. Puedes continuar con pagos en efectivo sin agregar un QR.",NativeUi.GOLD),20);
-        }else{
-            JSONObject photo=new JSONObject();put(photo,"image",encoded);ImageView preview=image(photo,360);preview.setScaleType(ImageView.ScaleType.FIT_CENTER);preview.setPadding(dp(15),dp(15),dp(15),dp(15));preview.setBackground(bg(Color.WHITE,LINE,18));preview.setContentDescription("QR de pago guardado por la olla");add(content,preview,18);preview.getLayoutParams().height=dp(265);
-            add(content,text("Tu QR está guardado",17,GREEN,true),12);
+        if (state == null && "orders".equals(getIntent().getStringExtra("screen"))) shell.screen("orders");
+        if (shell.screen().equals("photo")) shell.screen("edit");
+        if (shell.draft() == null) {
+            try {
+                File f = new File(getFilesDir(), "editor-draft.json");
+                if (f.exists()) shell.setDraft(new JSONObject(LocalStore.read(new CrossFile(f).openRead())));
+            } catch (Exception ignored) {}
         }
-        add(content,ui.button(encoded.isEmpty()?"Agregar mi QR":"Cambiar mi QR",true,"qr",()->choosePhoto("qr",false)),18);
-        if(qrDraftFile().exists())add(content,button("Revisar QR pendiente",false,()->go("qr","")),10);
-        if(encoded.isEmpty())add(content,button("Por ahora, usar efectivo",false,()->go("settings","")),10);
-        note("El QR guardado se incluye en tus afiches. Revisa siempre el efectivo o el abono antes de confirmar el pago de un pedido.");
-    }
-    private void showQrPreview(){
-        if(pendingQr.isEmpty())try{pendingQr=LocalStore.read(new CrossFile(qrDraftFile()).openRead());}catch(Exception error){go("payments","");return;}
-        title("¿Es el QR de tu negocio?","Revisa que esté completo y que corresponda a quien recibirá el pago.");
-        JSONObject photo=new JSONObject();put(photo,"image",pendingQr);ImageView preview=image(photo,480);preview.setScaleType(ImageView.ScaleType.FIT_CENTER);preview.setPadding(dp(16),dp(16),dp(16),dp(16));preview.setBackground(bg(Color.WHITE,LINE,18));preview.setContentDescription("Vista previa del QR seleccionado, todavía sin guardar");add(content,preview,20);preview.getLayoutParams().height=dp(315);
-        add(content,button("Elegir otra imagen",false,()->choosePhoto("qr",false)),14);
-        note("Seleccionar esta imagen no realiza un cobro. El QR anterior se conserva hasta que guardes el cambio.");
-        primary("Guardar mi QR",()->{JSONObject settings=data().optJSONObject("settings");put(settings,"paymentImage",pendingQr);if(enqueue("settings",settings,"payments")){pendingQr="";qrDraftFile().delete();render();}});
-    }
-    private void showHelp(){title("Ayuda para tus fotos","Consejos simples antes de abrir el editor.");add(content,ui.message("1. Busca buena luz","Acércate a una ventana o toma la foto de día. Evita colocar el producto frente a una luz fuerte.",NativeUi.GOLD),16);add(content,ui.message("2. Muestra todo el producto","Deja un pequeño espacio alrededor del plato, vaso o empaque para que el recorte no corte sus bordes.",NativeUi.CARD),12);add(content,ui.message("3. Usa un fondo sencillo","Una mesa o mantel sin muchos objetos ayuda a separar mejor el producto.",NativeUi.CARD),12);add(content,ui.message("4. Revisa antes de guardar","Puedes borrar o recuperar partes del recorte manualmente y combinar varios productos en una imagen.",NativeUi.SOFT),12);primary("Editar una foto",()->openStudio());}
-    private void showPublications(){title("Tus imágenes","Edita y guarda fotos aunque todavía no hayas creado un producto.");menu("Editar una foto","Recorta, corrige el fondo, combina productos y guarda el resultado","photo",()->openStudio());menu("Ayuda para empezar","Luz, encuadre, fondo y corrección manual paso a paso","help",()->go("help",""));LinearLayout guide=ui.message("Una foto clara vende mejor","1. Usa luz natural\n2. Muestra el producto completo\n3. Evita fondos con muchos objetos\n4. Revisa el recorte antes de guardar",NativeUi.GOLD);add(content,guide,20);}
-    private void selectProduct(boolean combo){if(!combo){chooseFlyerProducts();return;}JSONArray products=data().optJSONArray("products");List<String> names=new ArrayList<>(),ids=new ArrayList<>();for(int i=0;products!=null&&i<products.length();i++){JSONObject p=products.optJSONObject(i);if(p.optString("line").equals("commercial")){names.add(p.optString("name"));ids.add(p.optString("id"));}}if(names.isEmpty()){toast("Primero agrega un producto para vender.");return;}new AlertDialog.Builder(this).setTitle("Elige un producto").setItems(names.toArray(new String[0]),(d,index)->{JSONObject p=find("products",ids.get(index));publicationMessage=p.optString("description");go(combo?"promo":"publish",ids.get(index));}).setNegativeButton("Volver",null).show();}
-    private void editZone(int index){JSONObject settings=data().optJSONObject("settings");JSONArray zones=settings.optJSONArray("zones");JSONObject z=index>=0?zones.optJSONObject(index):new JSONObject();LinearLayout form=column();form.setPadding(dp(22),dp(8),dp(22),0);EditText name=new EditText(this),fee=new EditText(this),reference=new EditText(this);name.setHint("Nombre del sector");name.setText(z.optString("name"));fee.setHint("Tarifa de reparto (S/)");fee.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL);if(z.has("fee"))fee.setText(z.optString("fee"));reference.setHint("Acceso o punto de encuentro");reference.setText(z.optString("note"));Switch enabled=new Switch(this);enabled.setText("Sector habilitado");enabled.setChecked(z.optBoolean("enabled",false));for(EditText e:new EditText[]{name,fee,reference}){e.setTextSize(17);e.setTypeface(regular);e.setMinHeight(dp(56));form.addView(e);}form.addView(enabled);AlertDialog dialog=new AlertDialog.Builder(this).setTitle(index>=0?"Editar sector":"Nuevo sector").setView(form).setNegativeButton("Volver",null).setPositiveButton("Guardar sector",null).create();dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view->{try{double amount=Double.parseDouble(fee.getText().toString().replace(',','.'));if(name.getText().toString().trim().length()<2){name.setError("Escribe el nombre del sector.");return;}if(!Double.isFinite(amount)||amount<0||amount>=500)throw new Exception();JSONObject change=LocalStore.copy(z);change.put("id",z.optString("id",UUID.randomUUID().toString())).put("name",name.getText().toString().trim()).put("fee",amount).put("note",reference.getText().toString().trim()).put("enabled",enabled.isChecked());JSONObject latest=data().optJSONObject("settings");JSONArray copy=new JSONArray(latest.optJSONArray("zones").toString());if(index<0)copy.put(change);else copy.put(index,change);latest.put("zones",copy);if(enqueue("settings",latest,"delivery"))dialog.dismiss();}catch(Exception error){fee.setError("Escribe una tarifa válida entre 0 y 499.");}}));dialog.show();}
-    private JSONArray flyerProducts(){JSONArray result=new JSONArray(),catalog=data().optJSONArray("products");if(flyerIds.isEmpty()&&!currentId.isEmpty())flyerIds.add(currentId);for(String id:flyerIds)for(int i=0;catalog!=null&&i<catalog.length();i++){JSONObject product=catalog.optJSONObject(i);if(product.optString("id").equals(id)&&product.optString("line").equals("commercial")){result.put(LocalStore.copy(product));break;}}return result;}
-    private void chooseFlyerProducts(){
-        if(screen.equals("publish"))publicationMessage=value("message");JSONArray products=data().optJSONArray("products");ArrayList<String> ids=new ArrayList<>(),names=new ArrayList<>();for(int i=0;products!=null&&i<products.length();i++){JSONObject product=products.optJSONObject(i);if(product.optString("line").equals("commercial")){ids.add(product.optString("id"));names.add(product.optString("name")+" · "+cash(product.optDouble("price"))+" · "+SaleSchedule.display(product.optString("saleDate"),true));}}
-        if(ids.isEmpty()){toast("Primero agrega un producto para vender.");return;}ArrayList<String> chosen=new ArrayList<>();boolean[] checked=new boolean[ids.size()];for(int i=0;i<ids.size();i++)if(flyerIds.contains(ids.get(i))){checked[i]=true;chosen.add(ids.get(i));}if(chosen.isEmpty()){checked[0]=true;chosen.add(ids.get(0));}
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Productos del afiche · máximo 4").setMultiChoiceItems(names.toArray(new String[0]),checked,(d,index,on)->{if(on&&chosen.size()==4){((AlertDialog)d).getListView().setItemChecked(index,false);toast("Elige hasta 4 para que se vean claros.");return;}if(on)chosen.add(ids.get(index));else chosen.remove(ids.get(index));}).setNegativeButton("Volver",null).setPositiveButton("Usar productos",null).create();
-        dialog.setOnShowListener(d->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{if(chosen.isEmpty()){toast("Elige al menos un producto.");return;}String sale="";for(String id:chosen){JSONObject product=find("products",id),schedule=SaleSchedule.forProduct(product,data().optJSONObject("settings"));if(sale.isEmpty())sale=SaleSchedule.key(schedule);else if(!sale.equals(SaleSchedule.key(schedule))){toast("Para un mismo afiche, elige productos de la misma fecha de venta.");return;}}flyerIds.clear();flyerIds.addAll(chosen);currentId=chosen.get(0);screen="publish";dialog.dismiss();render();}));dialog.show();
-    }
-    private void showPublish(){JSONArray selected=flyerProducts();JSONObject p=selected.optJSONObject(0);if(p==null||!p.optString("line").equals("commercial")){go("products","");return;}title("Tu afiche",selected.length()==1?"Elige un estilo y revisa tu publicación.":"Cada producto con su foto y precio.");add(content,button("Elegir productos ("+selected.length()+")",false,()->chooseFlyerProducts()),12);segmented(selected.length()>1?new String[]{"Catálogo","Destacados","Próxima venta"}:new String[]{"Producto","Combo","Próxima venta"},flyerStyle,i->{publicationMessage=value("message");flyerStyle=i;render();});segmented(new String[]{"Estado vertical","Publicación cuadrada"},flyerSquare?1:0,i->{publicationMessage=value("message");flyerSquare=i==1;render();});ImageView preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.FIT_CENTER);preview.setBackground(bg(0xffeee7de,0,18));add(content,preview,18);preview.getLayoutParams().height=dp(390);String message=publicationMessage;int style=flyerStyle;boolean square=flyerSquare;JSONObject settings=SaleSchedule.forProduct(p,data().optJSONObject("settings"));worker.execute(()->{try{Bitmap bitmap=FlyerRenderer.render(selected,settings,message,style,square,ui);runOnUiThread(()->{if(screen.equals("publish")&&preview.getWindowToken()!=null)preview.setImageBitmap(bitmap);else bitmap.recycle();});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->toast("No pudimos preparar la vista del afiche."));}});field("message","Mensaje para acompañar",publicationMessage,"Ejemplo: ¡Reserva para nuestra próxima venta!",false);add(content,button("Actualizar vista previa",false,()->{publicationMessage=value("message");render();}),12);if(settings.optString("paymentImage").isEmpty())note("Puedes agregar el QR en Ajustes → Pagos y QR para incluirlo en el afiche.");note("Al compartir, elige WhatsApp y confirma a quién enviarlo. Puedes preparar el afiche sin internet.");primary("Compartir afiche y mensaje",()->{if(!SaleRules.validPhone(settings.optString("phone"))||settings.optString("pickup").trim().length()<4){toast("Completa el teléfono de contacto y el lugar de recojo antes de compartir.");go("profile","");return;}if(!SaleSchedule.invalid(settings).isEmpty()){toast("Programa la fecha de venta antes de compartir.");return;}createFlyer(p,value("message"));});}
-    private void showPromo(){
-        JSONObject p=find("products",currentId);if(p==null||!p.optString("line").equals("commercial")){go("products","");return;}JSONObject schedule=SaleSchedule.forProduct(p,data().optJSONObject("settings"));fields.clear();title("Crear combo","Elige una base y completa el contenido, precio y cupos.");
-        segmented(new String[]{"Merienda","Familiar","Antojo"},0,index->{EditText name=fields.get("name");if(name!=null)name.setText(new String[]{"Combo merienda","Combo familiar","Antojo de la tarde"}[index]);});
-        add(content,ui.message("Producto de referencia",p.optString("name")+" · "+SaleSchedule.day(schedule),NativeUi.GOLD),14);field("name","Nombre del combo","Combo merienda","Nombre que verá el cliente",false);field("description","¿Qué incluye?","","Ej. 3 cachangas + 2 cafés",false);field("price","Precio del combo (S/)","","Ej. 7.00",true);field("stock","¿Cuántos combos ofrecerás?","","Ej. 8",true);note("El combo tendrá la misma fecha de venta del producto elegido. Luego podrás agregarle una foto propia.");
-        primary("Guardar combo",()->{try{double price=Double.parseDouble(value("price").replace(',','.'));int stock=Integer.parseInt(value("stock"));if(value("name").length()<3||value("description").length()<3||price<=0||price>10000||stock<0||stock>10000||!Double.isFinite(price))throw new Exception();String id=UUID.randomUUID().toString();JSONObject product=new JSONObject().put("id",id).put("name",value("name")).put("description",value("description")).put("price",price).put("stock",stock).put("hours",p.optString("hours")).put("category","Combos").put("saleUnit","combo").put("portion",value("description")).put("line","commercial").put("available",true).put("image","").put("imageReference",true).put("illustration",p.optString("illustration")).put("version",0);for(String key:SaleSchedule.KEYS)product.put(key,schedule.get(key));JSONObject promo=new JSONObject().put("id",UUID.randomUUID().toString()).put("title",value("name")).put("description",value("description")).put("price",price).put("productId",id).put("hours",p.optString("hours")).put("active",true);store.enqueueCombo(product,promo);screen="products";render();toast("Combo guardado. Puedes editarlo para agregar una foto.");}catch(Exception e){toast("Revisa nombre, contenido, precio y cantidad entera.");}});
+        getWindow().getDecorView().setSystemUiVisibility(0);
+        getWindow().setStatusBarColor(NativeUi.DEEP);
+        getWindow().setNavigationBarColor(NativeUi.WINE);
+        shell.render();
     }
 
-    private boolean enqueue(String type,JSONObject value,String destination){try{store.enqueue(type,value);screen=destination;render();toast("Guardado en este celular.");return true;}catch(Exception e){toast("No se pudo guardar. Conserva la pantalla y vuelve a intentar.");return false;}}
-    private void startManual(JSONObject restore){
-        if(syncing){toast("Espera a que termine la actualización.");return;}Intent intent=new Intent(this,ManualOrderActivity.class);if(restore!=null)intent.putExtra("restoreDraft",restore.toString());startActivityForResult(intent,85);
+    @Override public void onResume() {
+        super.onResume();
+        if (shell == null) return;
+        shell.resumed(true);
+        bridgeOrders=orderCount();
+        registerBridgeObserver();
+        if (shell.store() != null && shell.root() != null) shell.render();
     }
-    private void exportBackup(){try{Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("application/json");intent.putExtra(Intent.EXTRA_TITLE,"ManchApp-respaldo-"+SaleSchedule.date(System.currentTimeMillis())+".json");startActivityForResult(intent,86);}catch(Exception error){toast("No hay una aplicación disponible para guardar el archivo.");}}
-    private void editDispatch(JSONObject order){
-        LinearLayout form=column();form.setPadding(dp(20),dp(10),dp(20),dp(8));EditText driver=new EditText(this),window=new EditText(this);driver.setText(order.optString("driver"));driver.setHint("Nombre de quien reparte");driver.setSingleLine(true);driver.setTextSize(17);driver.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(80)});window.setText(order.optString("deliveryWindow"));window.setHint("Horario acordado, por ejemplo de 5 a 6 p. m.");window.setTextSize(17);window.setMinLines(2);window.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(100)});add(form,text("Responsable del reparto",15,INK,true),0);add(form,driver,5);add(form,text("Franja de entrega acordada",15,INK,true),14);add(form,window,5);
-        new AlertDialog.Builder(this).setTitle("Organizar reparto").setView(form).setNegativeButton("Volver",null).setPositiveButton("Guardar",(dialog,which)->{JSONObject change=orderChange(order);put(change,"driver",driver.getText().toString().trim());put(change,"deliveryWindow",window.getText().toString().trim());enqueue("order",change,"order");}).show();
-    }
-    private List<String> sellingDays(){TreeSet<String> dates=new TreeSet<>(Collections.reverseOrder());JSONArray products=data().optJSONArray("products");for(int i=0;products!=null&&i<products.length();i++){String date=products.optJSONObject(i).optString("saleDate");if(!date.isEmpty())dates.add(date);}JSONArray orders=data().optJSONArray("orders");for(int i=0;orders!=null&&i<orders.length();i++){String date=orders.optJSONObject(i).optString("saleDate");if(!date.isEmpty())dates.add(date);}return new ArrayList<>(dates);}
-    private void chooseFilter(String label,List<String> names,List<String> ids,String selected,java.util.function.Consumer<String> action){
-        add(content,text(label,14,INK,true),12);Spinner picker=new Spinner(this);picker.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,names));picker.setMinimumHeight(dp(52));picker.setSelection(Math.max(0,ids.indexOf(selected)));picker.setContentDescription(label);picker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> parent){}public void onItemSelected(AdapterView<?> parent,View view,int position,long id){if(!ids.get(position).equals(selected))action.accept(ids.get(position));}});add(content,picker,4);
-    }
-    private void showOrderFilters(){
-        if(orderDate.isEmpty())orderDate=data().optJSONObject("settings").optString("saleDate");List<String> dates=sellingDays(),ids=new ArrayList<>(),names=new ArrayList<>();ids.add("*");names.add("Todas las fechas");for(String date:dates){ids.add(date);names.add(SaleSchedule.display(date,true));}chooseFilter("Día de venta",names,ids,orderDate,value->{orderDate=value;render();});
-        List<String> deliveryIds=new ArrayList<>(Arrays.asList("all","pickup","delivery")),deliveryNames=new ArrayList<>(Arrays.asList("Todos los pedidos","Solo recojo","Todo el delivery"));JSONArray zones=data().optJSONObject("settings").optJSONArray("zones");for(int i=0;zones!=null&&i<zones.length();i++){JSONObject zone=zones.optJSONObject(i);deliveryIds.add("zone:"+zone.optString("id"));deliveryNames.add("Delivery · "+zone.optString("name"));}chooseFilter("Modalidad o sector",deliveryNames,deliveryIds,orderDelivery,value->{orderDelivery=value;render();});
-    }
-    private boolean visibleOrder(JSONObject order){
-        if(!orderDate.equals("*")&&!order.optString("saleDate").equals(orderDate))return false;
-        if(orderDelivery.equals("all"))return true;if(orderDelivery.equals("pickup")||orderDelivery.equals("delivery"))return order.optString("fulfillment").equals(orderDelivery);
-        if(orderDelivery.startsWith("zone:")){String id=orderDelivery.substring(5);if(order.optString("zoneId").equals(id))return true;JSONArray zones=data().optJSONObject("settings").optJSONArray("zones");for(int i=0;zones!=null&&i<zones.length();i++)if(zones.optJSONObject(i).optString("id").equals(id)&&zones.optJSONObject(i).optString("name").equals(order.optString("zone")))return true;}return false;
-    }
-    private void showSummary(){
-        title("Así va tu venta","Cantidades, pagos y entregas de la jornada.");List<String> days=sellingDays();if(summaryDate.isEmpty())summaryDate=data().optJSONObject("settings").optString("saleDate");List<String> labels=new ArrayList<>();for(String day:days)labels.add(SaleSchedule.display(day,true));chooseFilter("Día de venta",labels,days,summaryDate,value->{summaryDate=value;render();});
-        try{JSONObject summary=OrderSummary.build(data(),summaryDate);LinearLayout confirmed=ui.message(summary.optInt("orders")+" pedidos confirmados","Recojos: "+summary.optInt("pickups")+" · Repartos: "+summary.optInt("deliveries")+"\nEntregados: "+summary.optInt("completed")+" · Pagos pendientes: "+summary.optInt("unpaid"),NativeUi.GOLD);add(content,confirmed,16);
-            if(summary.optInt("unconfirmed")>0)add(content,ui.message(summary.optInt("unconfirmed")+(summary.optInt("unconfirmed")==1?" solicitud local":" solicitudes locales"),"Fueron registradas manualmente en este celular.",NativeUi.SOFT),12);
-            add(content,ui.heading("Cantidades reservadas",22),22);JSONArray products=summary.optJSONArray("products");if(products.length()==0)note("Todavía no hay cantidades registradas para esta jornada.");for(int i=0;i<products.length();i++){JSONObject product=products.optJSONObject(i);LinearLayout row=card();add(row,text(product.optString("name"),18,INK,true),0);add(row,text("Cantidad confirmada: "+product.optInt("confirmed"),16,WINE,true),6);if(product.optInt("pending")>0)add(row,text(product.optInt("pending")+" por confirmar",14,MUTED,false),5);add(content,row,12);}
-            add(content,ui.heading("Cupos disponibles",21),22);JSONArray available=data().optJSONArray("products");for(int i=0;available!=null&&i<available.length();i++){JSONObject product=available.optJSONObject(i);if(product.optString("line").equals("commercial")&&product.optBoolean("available")&&product.optString("saleDate").equals(summaryDate))add(content,text(product.optString("name")+" · "+product.optInt("stock"),16,INK,false),8);}
-            primary("Ver pedidos de esta jornada",()->{orderDate=summaryDate;orderDelivery="all";go("orders","");});
-        }catch(Exception error){note("No pudimos preparar el resumen. Tus pedidos se conservan.");}
-    }
-    private void choosePhoto(String target,boolean camera){if(screen.equals("edit"))captureEditor();photoFor=target;try{if(camera){File dir=new File(getCacheDir(),"shared");dir.mkdirs();cameraUri=Uri.parse("content://pe.manchapp.beta.files/camera.jpg");Intent intent=new Intent(MediaStore.ACTION_IMAGE_CAPTURE);intent.putExtra(MediaStore.EXTRA_OUTPUT,cameraUri);intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_READ_URI_PERMISSION);intent.setClipData(ClipData.newRawUri("Foto",cameraUri));startActivityForResult(intent,41);}else{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType("image/*");intent.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(intent,42);}}catch(Exception e){toast("No se pudo abrir la cámara o la galería de este equipo.");}}
-    @Override protected void onActivityResult(int request,int result,Intent intent){super.onActivityResult(request,result,intent);if(request==87){if(result==RESULT_OK)useStudioPhoto();return;}if(request==85){if(result==RESULT_OK&&intent!=null){store=LocalStore.open(this);go("order",intent.getStringExtra("orderId"));}return;}if(request==86){if(result==RESULT_OK&&intent!=null&&intent.getData()!=null){final Uri uri=intent.getData();final String backup=store.snapshot().toString();worker.execute(()->{try(OutputStream out=getContentResolver().openOutputStream(uri)){if(out==null)throw new IOException();out.write(backup.getBytes("UTF-8"));runOnUiThread(()->toast("Copia de seguridad guardada."));}catch(Exception error){runOnUiThread(()->toast("No pudimos guardar la copia. Tus datos siguen en la app."));}});}return;}if(request==84){if(result==RESULT_OK){try{String encoded=LocalStore.read(new FileInputStream(PhotoEditorActivity.output(this)));pickedImage=encoded;if(draft==null)draft=new JSONObject();put(draft,"image",encoded);draft.remove("_compositionId");draft.remove("_compositionHash");if(intent!=null&&intent.getStringExtra("compositionId")!=null&&!intent.getStringExtra("compositionId").isEmpty()){put(draft,"_compositionId",intent.getStringExtra("compositionId"));put(draft,"_compositionHash",PhotoOriginals.digest(encoded));}put(draft,"imageReference",false);screen="edit";saveDraft();render();toast("Foto aplicada al borrador. No necesitas guardar el producto para seguir editando.");}catch(Exception error){toast("No pudimos recuperar la foto editada. Tu producto se conserva.");}}return;}if(result!=RESULT_OK||!(request==41||request==42))return;Uri uri=request==41?Uri.parse("content://pe.manchapp.beta.files/camera.jpg"):intent==null?null:intent.getData();if(uri==null)return;final String target=photoFor;toast("Preparando imagen…");worker.execute(()->{try{Bitmap bitmap=ImageTools.read(this,uri);String encoded=target.equals("qr")?ImageTools.encodeQr(bitmap):ImageTools.encodeEdited(bitmap);bitmap.recycle();if(target.equals("qr"))rememberQr(encoded);runOnUiThread(()->{if(isFinishing()||isDestroyed())return;if(target.equals("qr")){pendingQr=encoded;go("qr","");}else{pickedImage=encoded;if(draft==null)draft=new JSONObject();put(draft,"_sourcePhoto",encoded);put(draft,"image",encoded);put(draft,"imageReference",false);editorStep=0;screen="edit";saveDraft();render();improvePhoto();}});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->toast(target.equals("qr")?"No pudimos preparar el QR. Elige una captura clara y de menor tamaño.":"No pudimos preparar esa imagen. Prueba una foto de menor tamaño."));}});}
-    private void imageBank(){captureEditor();String[] names={"Papa rellena","Causa","Cachanga","Mazamorra","Café"},ids={"papa","causa","cachanga","mazamorra","cafe"};new AlertDialog.Builder(this).setTitle("Ilustraciones para tus productos").setItems(names,(d,index)->{pickedImage="";put(draft,"image","");put(draft,"illustration",ids[index]);put(draft,"imageReference",true);render();}).setNegativeButton("Volver",null).show();}
-    private String compositionFor(JSONObject value){try{if(!value.optString("_compositionId").isEmpty()&&value.optString("_compositionHash").equals(PhotoOriginals.digest(value.optString("image"))))return value.optString("_compositionId");return PhotoOriginals.composition(this,value.optString("id"),value.optString("image"));}catch(Exception error){return "";}}
-    private void improvePhoto(){captureEditor();saveDraft();String compositionId=compositionFor(draft);if(!compositionId.isEmpty()){startActivityForResult(new Intent(this,PhotoComposeActivity.class).putExtra("compositionId",compositionId),84);return;}final JSONObject source=LocalStore.copy(draft);if(!pickedImage.isEmpty())put(source,"image",pickedImage);toast("Abriendo editor de fotos…");worker.execute(()->{Bitmap original=null;try{original=ImageTools.productPhoto(this,source,960);if(original==null)throw new IOException();float scale=Math.min(1f,960f/Math.max(original.getWidth(),original.getHeight()));if(scale<1){Bitmap small=Bitmap.createScaledBitmap(original,Math.max(1,Math.round(original.getWidth()*scale)),Math.max(1,Math.round(original.getHeight()*scale)),true);if(small!=original)original.recycle();original=small;}PhotoOriginals.remember(this,source.optString("id"),ImageTools.encodeEdited(original));try(OutputStream out=new FileOutputStream(PhotoEditorActivity.input(this))){if(!original.compress(ImageTools.hasTransparency(original)?Bitmap.CompressFormat.PNG:Bitmap.CompressFormat.JPEG,95,out))throw new IOException();}runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())startActivityForResult(new Intent(this,PhotoEditorActivity.class).putExtra("includeObjects",source.optString("category").equals("Combos")),84);});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->toast("No pudimos abrir esa foto. Elige una imagen de menor tamaño."));}finally{if(original!=null&&!original.isRecycled())original.recycle();}});}
 
-    private void createFlyer(JSONObject p,String message){JSONArray selected=flyerProducts();JSONObject settings=SaleSchedule.forProduct(p,data().optJSONObject("settings"));int style=flyerStyle;boolean square=flyerSquare;toast("Preparando afiche…");worker.execute(()->{try{Bitmap bitmap=FlyerRenderer.render(selected,settings,message,style,square,ui);File dir=new File(getCacheDir(),"shared");dir.mkdirs();File file=new File(dir,"manchapp-publicacion.png");try(OutputStream out=new FileOutputStream(file)){bitmap.compress(Bitmap.CompressFormat.PNG,100,out);}bitmap.recycle();runOnUiThread(()->{try{Uri uri=Uri.parse("content://pe.manchapp.beta.files/"+file.getName());Intent share=new Intent(Intent.ACTION_SEND);share.setType("image/png");share.putExtra(Intent.EXTRA_STREAM,uri);StringBuilder productsText=new StringBuilder();for(int i=0;i<selected.length();i++){JSONObject item=selected.optJSONObject(i);if(i>0)productsText.append("\n");productsText.append(item.optString("name")).append(" · ").append(cash(item.optDouble("price")));}share.putExtra(Intent.EXTRA_TEXT,message+"\n"+productsText+"\nVenta: "+SaleSchedule.day(settings)+"\n"+SaleSchedule.window(settings)+"\nReservas hasta "+SaleSchedule.deadline(settings)+"\n"+settings.optString("pickup"));share.setClipData(ClipData.newRawUri("Afiche",uri));share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(share,"Compartir publicación"));}catch(Exception error){toast("No hay una aplicación disponible para compartir en este equipo.");}});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->toast("No pudimos preparar el afiche. Prueba una foto más pequeña."));}});}
-    private static void put(JSONObject o,String key,Object value){try{o.put(key,value);}catch(JSONException e){throw new IllegalStateException(e);}}
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (shell != null && "orders".equals(intent.getStringExtra("screen"))) shell.go("orders", "");
+    }
 
+    @Override public void onPause() {
+        super.onPause();
+        unregisterBridgeObserver();
+        if (shell == null) return;
+        shell.resumed(false);
+        shell.saveDraft();
+    }
+
+    @Override public void onDestroy() {
+        unregisterBridgeObserver();
+        super.onDestroy();
+        if (shell != null) shell.shutdown();
+    }
+
+    private int orderCount(){return shell==null||shell.store()==null?0:shell.store().snapshot().optJSONArray("orders").length();}
+
+    private void registerBridgeObserver(){
+        if(bridgeObserver!=null)return;
+        bridgeObserver=new ContentObserver(bridgeHandler){
+            @Override public void onChange(boolean selfChange){
+                if(shell==null||shell.root()==null)return;
+                int count=orderCount();
+                if(count==bridgeOrders)return;
+                bridgeOrders=count;
+                String screen=shell.screen();
+                if(screen.equals("home")||screen.equals("orders")||screen.equals("summary"))shell.render();
+            }
+        };
+        getContentResolver().registerContentObserver(BRIDGE,true,bridgeObserver);
+    }
+
+    private void unregisterBridgeObserver(){
+        if(bridgeObserver==null)return;
+        getContentResolver().unregisterContentObserver(bridgeObserver);
+        bridgeObserver=null;
+    }
+
+    @Override public void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        if (shell == null) return;
+        shell.saveDraft();
+        out.putStringArrayList("flyerIds", shell.flyerIds);
+        out.putStringArrayList("history", shell.history());
+        out.putInt("flyerStyle", shell.flyerStyle());
+        out.putInt("flyerFormat", shell.flyerFormat());
+        out.putString("publicationMessage", shell.screen().equals("publish") ? shell.value("message") : shell.publicationMessage());
+        out.putString("screen", shell.screen());
+        out.putString("id", shell.currentId());
+        out.putString("photoFor", shell.photoFor());
+        out.putBoolean("editorMore", shell.editorMore());
+        if (shell.saleDraft() != null) out.putString("saleDraft", shell.saleDraft().toString());
+    }
+
+    @Override public void onBackPressed() {
+        if (shell == null) { super.onBackPressed(); return; }
+        if (shell.screen().equals("edit")) {
+            ProductEditorScreen.captureEditor(shell);
+            shell.saveDraft();
+            shell.toast("Borrador conservado. Puedes continuarlo desde Productos.");
+        }
+        if (shell.history().isEmpty()) {
+            super.onBackPressed();
+            return;
+        }
+        String[] previous = shell.history().remove(shell.history().size() - 1).split("\\t", -1);
+        shell.screen(previous[0]);
+        shell.currentId(previous.length > 1 ? previous[1] : "");
+        shell.render();
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent intent) {
+        super.onActivityResult(request, result, intent);
+        if (shell == null) return;
+        if (request == 87) {
+            if (result == RESULT_OK) ProductEditorScreen.useStudioPhoto(shell);
+            return;
+        }
+        if (request == 85) {
+            if (result == RESULT_OK && intent != null) {
+                shell.setStore(LocalStore.open(this));
+                shell.go("order", intent.getStringExtra("orderId"));
+            }
+            return;
+        }
+        if (request == 88) {
+            if (result == RESULT_OK && intent != null && intent.getData() != null) {
+                FlyerStudioScreen.saveFlyerToUri(shell, intent.getData());
+            }
+            return;
+        }
+        if (request == 86) {
+            if (result == RESULT_OK && intent != null && intent.getData() != null) {
+                final Uri uri = intent.getData();
+                final String backup = shell.store().snapshot().toString();
+                shell.worker().execute(() -> {
+                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                        if (out == null) throw new IOException();
+                        out.write(backup.getBytes("UTF-8"));
+                        runOnUiThread(() -> shell.toast("Copia de seguridad guardada."));
+                    } catch (Exception error) {
+                        runOnUiThread(() -> shell.toast("No pudimos guardar la copia. Tus datos siguen en la app."));
+                    }
+                });
+            }
+            return;
+        }
+        if (request == 84) {
+            if (result == RESULT_OK) {
+                try {
+                    String encoded = LocalStore.read(new FileInputStream(PhotoEditorActivity.output(this)));
+                    shell.pickedImage(encoded);
+                    if (shell.draft() == null) shell.setDraft(new JSONObject());
+                    JSONObject draft = shell.draft();
+                    AppShell.put(draft, "image", encoded);
+                    draft.remove("_compositionId");
+                    draft.remove("_compositionHash");
+                    if (intent != null && intent.getStringExtra("compositionId") != null && !intent.getStringExtra("compositionId").isEmpty()) {
+                        AppShell.put(draft, "_compositionId", intent.getStringExtra("compositionId"));
+                        AppShell.put(draft, "_compositionHash", PhotoOriginals.digest(encoded));
+                    }
+                    AppShell.put(draft, "imageReference", false);
+                    shell.screen("edit");
+                    shell.saveDraft();
+                    shell.render();
+                    shell.toast("Foto aplicada al borrador. No necesitas guardar el producto para seguir editando.");
+                } catch (Exception error) {
+                    shell.toast("No pudimos recuperar la foto editada. Tu producto se conserva.");
+                }
+            }
+            return;
+        }
+        if (result != RESULT_OK || !(request == 41 || request == 42)) return;
+        Uri uri = request == 41 ? Uri.parse("content://pe.manchapp.beta.files/camera.jpg") : intent == null ? null : intent.getData();
+        if (uri == null) return;
+        final String target = shell.photoFor();
+        shell.toast("Preparando imagen…");
+        shell.worker().execute(() -> {
+            try {
+                Bitmap bitmap = ImageTools.read(this, uri);
+                String encoded = target.equals("qr") ? ImageTools.encodeQr(bitmap) : ImageTools.encodeEdited(bitmap);
+                bitmap.recycle();
+                if (target.equals("qr")) shell.rememberQr(encoded);
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (target.equals("qr")) {
+                        shell.pendingQr(encoded);
+                        shell.go("qr", "");
+                    } else {
+                        shell.pickedImage(encoded);
+                        if (shell.draft() == null) shell.setDraft(new JSONObject());
+                        JSONObject draft = shell.draft();
+                        AppShell.put(draft, "_sourcePhoto", encoded);
+                        AppShell.put(draft, "image", encoded);
+                        AppShell.put(draft, "imageReference", false);
+                        shell.screen("edit");
+                        shell.saveDraft();
+                        shell.render();
+                        ProductEditorScreen.improvePhoto(shell);
+                    }
+                });
+            } catch (Exception | OutOfMemoryError error) {
+                runOnUiThread(() -> shell.toast(target.equals("qr")
+                        ? "No pudimos preparar el QR. Elige una captura clara y de menor tamaño."
+                        : "No pudimos preparar esa imagen. Prueba una foto de menor tamaño."));
+            }
+        });
+    }
 }
