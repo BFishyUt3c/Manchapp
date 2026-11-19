@@ -4,6 +4,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.text.InputFilter;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import org.json.*;
@@ -32,7 +33,7 @@ final class OrderScreen {
         MainActivity activity = shell.activity();
         NativeUi ui = shell.ui();
         LinearLayout content = shell.content();
-        shell.title("Gestionar ventas", "Pedidos, cupos y entregas en un solo lugar.");
+        shell.title("Ventas", "Pedidos, cupos y entregas en un solo lugar.");
         JSONArray products = shell.data().optJSONArray("products");
         JSONArray orders = shell.data().optJSONArray("orders");
         int units = 0, attention = 0;
@@ -49,22 +50,24 @@ final class OrderScreen {
         }
 
         LinearLayout stats = new LinearLayout(activity);
-        stats.setPadding(0, shell.dp(8), 0, shell.dp(8));
-        LinearLayout stock = ui.message(String.valueOf(units), "Cupos", NativeUi.CARD);
-        LinearLayout pendingBox = ui.message(String.valueOf(attention), "Pendientes", NativeUi.GOLD);
+        stats.setPadding(0, shell.dp(6), 0, shell.dp(6));
+        LinearLayout stock = ui.message(String.valueOf(units), "Cupos disponibles", NativeUi.CARD);
+        LinearLayout pendingBox = ui.message(String.valueOf(attention), "Por atender", NativeUi.GOLD);
         LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -1, 1);
         left.rightMargin = shell.dp(10);
         stats.addView(stock, left);
         stats.addView(pendingBox, new LinearLayout.LayoutParams(0, -1, 1));
-        shell.add(content, stats, 16);
+        shell.add(content, stats, 14);
 
         LinearLayout quickActions = new LinearLayout(activity);
-        quickActions.addView(ui.button("Registrar Pedido", true, "plus", () -> startManual(shell, null)),
-                new LinearLayout.LayoutParams(0, -2, 1));
-        View spacer = new View(activity);
-        quickActions.addView(spacer, new LinearLayout.LayoutParams(shell.dp(12), 1));
-        quickActions.addView(ui.button("Resumen", false, "orders", () -> shell.go("summary", "")),
-                new LinearLayout.LayoutParams(0, -2, 1));
+        TextView addOrder = ui.button("+ Pedido", true, null, () -> startManual(shell, null));
+        TextView summaryBtn = ui.button("Resumen", false, null, () -> shell.go("summary", ""));
+        addOrder.setTextSize(15);
+        summaryBtn.setTextSize(15);
+        LinearLayout.LayoutParams actLeft = new LinearLayout.LayoutParams(0, -2, 1);
+        actLeft.rightMargin = shell.dp(10);
+        quickActions.addView(addOrder, actLeft);
+        quickActions.addView(summaryBtn, new LinearLayout.LayoutParams(0, -2, 1));
         shell.add(content, quickActions, 12);
 
         showOrderFilters(shell);
@@ -72,6 +75,7 @@ final class OrderScreen {
             shell.orderFilter(i == 0 ? "active" : "finished");
             shell.render();
         });
+
         int count = 0;
         for (int i = 0; orders != null && i < orders.length(); i++) {
             JSONObject o = orders.optJSONObject(i);
@@ -79,20 +83,48 @@ final class OrderScreen {
             boolean ended = o.optString("status").equals("delivered") || o.optString("status").equals("cancelled");
             if (ended != shell.orderFilter().equals("finished")) continue;
             count++;
+
             LinearLayout c = shell.card();
-            shell.add(c, shell.text("Pedido " + String.format(Locale.US, "%03d", o.optInt("number")) + " · " + o.optString("customer"), 18, NativeUi.INK, true), 0);
-            shell.add(c, shell.text(shell.status(o.optString("status")), 14, NativeUi.WINE, true), 7);
-            shell.add(c, shell.text("Venta: " + SaleSchedule.day(o), 14, NativeUi.INK, true), 7);
-            shell.add(c, shell.text((o.optString("fulfillment").equals("delivery") ? "Delivery · " + o.optString("zone") : "Para recoger") + " · " + shell.cash(o.optDouble("total")), 14, NativeUi.MUTED, false), 7);
-            shell.add(c, shell.text(o.optBoolean("paid") ? "Pago confirmado" : "Pago pendiente", 12, o.optBoolean("paid") ? NativeUi.GREEN : 0xff8a6425, true), 6);
-            shell.add(c, shell.button("Ver pedido  →", false, () -> shell.go("order", o.optString("id"))), 13);
-            shell.add(content, c, 14);
+            LinearLayout header = new LinearLayout(activity);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+            header.addView(
+                    shell.text("Pedido " + String.format(Locale.US, "%03d", o.optInt("number")) + " · " + o.optString("customer"),
+                            17, NativeUi.INK, true),
+                    new LinearLayout.LayoutParams(0, -2, 1));
+            header.addView(shell.text("›", 24, NativeUi.MUTED, false));
+            c.addView(header);
+
+            LinearLayout badges = new LinearLayout(activity);
+            TextView statusChip = ui.chip(shell.status(o.optString("status")), NativeUi.WINE, NativeUi.GOLD);
+            statusChip.setTextSize(11);
+            LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, -2);
+            chipLp.rightMargin = shell.dp(8);
+            badges.addView(statusChip, chipLp);
+
+            boolean paid = o.optBoolean("paid");
+            TextView paidChip = ui.chip(
+                    paid ? "Pagado" : "Pago pendiente",
+                    paid ? NativeUi.GREEN : 0xff8a6425,
+                    paid ? 0xffe6f4ea : NativeUi.SOFT);
+            paidChip.setTextSize(11);
+            badges.addView(paidChip);
+            shell.add(c, badges, 8);
+
+            shell.add(c, shell.text("Venta: " + SaleSchedule.day(o), 14, NativeUi.INK, true), 8);
+            String mode = o.optString("fulfillment").equals("delivery")
+                    ? "Delivery · " + o.optString("zone")
+                    : "Para recoger";
+            shell.add(c, shell.text(mode + " · " + shell.cash(o.optDouble("total")), 14, NativeUi.MUTED, false), 4);
+
+            c.setFocusable(true);
+            c.setOnClickListener(v -> shell.go("order", o.optString("id")));
+            shell.add(content, c, 12);
         }
         if (count == 0) {
             LinearLayout c = shell.card();
-            shell.add(c, shell.text("Todavía no hay pedidos aquí", 19, NativeUi.INK, true), 0);
-            shell.add(c, shell.text("Cuando recibas un pedido, aquí verás su fecha de venta y podrás registrar la salida del delivery o habilitar el recojo.", 15, NativeUi.MUTED, false), 10);
-            shell.add(content, c, 22);
+            shell.add(c, shell.text("Todavía no hay pedidos aquí", 18, NativeUi.INK, true), 0);
+            shell.add(c, shell.text("Cuando recibas o registres un pedido, aquí verás su fecha de venta y podrás gestionar el recojo o reparto.", 14, NativeUi.MUTED, false), 8);
+            shell.add(content, c, 18);
         }
     }
 
@@ -174,6 +206,7 @@ final class OrderScreen {
                     }), 12);
         }
         shell.add(content, payment, 12);
+
         if (SaleRules.validPhone(order.optString("phone"))) {
             shell.add(content, ui.button("Llamar al cliente", false, null, () -> {
                 try {
@@ -244,15 +277,16 @@ final class OrderScreen {
                     return;
                 }
                 if (target.equals("delivering")) {
-                    EditText name = new EditText(activity);
-                    name.setHint("Nombre de quien hará el reparto");
+                    LinearLayout form = dialogContainer(shell);
+                    EditText name = styledInput(shell, form, "Responsable del reparto", "Ej. Juan Pérez", 80, true);
+                    name.setText(order.optString("driver"));
                     AlertDialog dialog = new AlertDialog.Builder(activity)
                             .setTitle("¿Quién lo entrega?")
-                            .setView(name)
+                            .setView(form)
                             .setNegativeButton("Volver", null)
                             .setPositiveButton("Confirmar salida", null)
                             .create();
-                    dialog.setOnShowListener(v -> dialog.getButton(-1).setOnClickListener(view -> {
+                    dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                         String value = name.getText().toString().trim();
                         if (value.length() < 2) {
                             name.setError("Escribe el nombre de quien reparte.");
@@ -285,25 +319,38 @@ final class OrderScreen {
         }
     }
 
+    private static LinearLayout dialogContainer(AppShell shell) {
+        LinearLayout form = shell.column();
+        form.setBackgroundColor(NativeUi.BG);
+        form.setPadding(shell.dp(20), shell.dp(14), shell.dp(20), shell.dp(12));
+        return form;
+    }
+
+    private static EditText styledInput(AppShell shell, LinearLayout parent, String label, String hint, int maxLen, boolean singleLine) {
+        shell.add(parent, shell.text(label, 14, NativeUi.INK, true), parent.getChildCount() == 0 ? 0 : 12);
+        EditText e = new EditText(shell.activity());
+        e.setHint(hint);
+        e.setSingleLine(singleLine);
+        if (!singleLine) e.setMinLines(2);
+        e.setTextSize(16);
+        e.setTypeface(shell.regular());
+        e.setTextColor(NativeUi.INK);
+        e.setHintTextColor(NativeUi.MUTED);
+        e.setPadding(shell.dp(13), shell.dp(11), shell.dp(13), shell.dp(11));
+        e.setBackground(shell.bg(NativeUi.CARD, NativeUi.LINE, 12));
+        e.setMinHeight(shell.dp(48));
+        e.setFilters(new InputFilter[]{new InputFilter.LengthFilter(maxLen)});
+        shell.add(parent, e, 6);
+        return e;
+    }
+
     static void editDispatch(AppShell shell, JSONObject order) {
         MainActivity activity = shell.activity();
-        LinearLayout form = shell.column();
-        form.setPadding(shell.dp(20), shell.dp(10), shell.dp(20), shell.dp(8));
-        EditText driver = new EditText(activity), window = new EditText(activity);
+        LinearLayout form = dialogContainer(shell);
+        EditText driver = styledInput(shell, form, "Responsable del reparto", "Nombre de quien reparte", 80, true);
         driver.setText(order.optString("driver"));
-        driver.setHint("Nombre de quien reparte");
-        driver.setSingleLine(true);
-        driver.setTextSize(17);
-        driver.setFilters(new InputFilter[]{new InputFilter.LengthFilter(80)});
+        EditText window = styledInput(shell, form, "Franja de entrega acordada", "Ej. De 5:00 p. m. a 6:00 p. m.", 100, false);
         window.setText(order.optString("deliveryWindow"));
-        window.setHint("Horario acordado, por ejemplo de 5 a 6 p. m.");
-        window.setTextSize(17);
-        window.setMinLines(2);
-        window.setFilters(new InputFilter[]{new InputFilter.LengthFilter(100)});
-        shell.add(form, shell.text("Responsable del reparto", 15, NativeUi.INK, true), 0);
-        shell.add(form, driver, 5);
-        shell.add(form, shell.text("Franja de entrega acordada", 15, NativeUi.INK, true), 14);
-        shell.add(form, window, 5);
         new AlertDialog.Builder(activity)
                 .setTitle("Organizar reparto")
                 .setView(form)
@@ -470,19 +517,12 @@ final class OrderScreen {
 
     private static void confirmPaymentDialog(AppShell shell, JSONObject order) {
         MainActivity activity = shell.activity();
-        LinearLayout form = shell.column();
-        form.setPadding(shell.dp(20), shell.dp(10), shell.dp(20), shell.dp(8));
+        LinearLayout form = dialogContainer(shell);
+        shell.add(form, shell.text("¿Cómo pagó el cliente?", 14, NativeUi.INK, true), 0);
         Spinner methodPicker = shell.spinner(new String[]{"Efectivo", "Yape", "Plin"},
                 "yape".equals(order.optString("payment")) ? 1 : "plin".equals(order.optString("payment")) ? 2 : 0);
-        EditText note = new EditText(activity);
-        note.setHint("Nro. operación o nota (opcional)");
-        note.setSingleLine(true);
-        note.setTextSize(16);
-        note.setFilters(new InputFilter[]{new InputFilter.LengthFilter(80)});
-        shell.add(form, shell.text("¿Cómo pagó el cliente?", 15, NativeUi.INK, true), 0);
         shell.add(form, methodPicker, 6);
-        shell.add(form, shell.text("Referencia o nota", 15, NativeUi.INK, true), 14);
-        shell.add(form, note, 6);
+        EditText note = styledInput(shell, form, "Referencia o nota", "Nro. operación o nota (opcional)", 80, true);
         new AlertDialog.Builder(activity)
                 .setTitle("Confirmar " + shell.cash(order.optDouble("total")))
                 .setView(form)

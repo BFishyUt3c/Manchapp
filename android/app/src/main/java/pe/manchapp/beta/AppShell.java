@@ -589,7 +589,7 @@ final class AppShell {
             }
             if (!onboarding) {
                 root.addView(ui.navigation(new String[]{"home", "publications", "products", "orders"},
-                        new String[]{"Inicio", "Imágenes", "Productos", "Gestionar Ventas"},
+                        new String[]{"Inicio", "Imágenes", "Productos", "Ventas"},
                         new String[]{"home", "photo", "food", "orders"}, destination(), this::changeTab));
             }
         } finally {
