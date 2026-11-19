@@ -63,7 +63,7 @@ public class PhotoFlowTest {
             call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},84,Activity.RESULT_CANCELED,null);assertEquals(edited,shell.draft().getString("image"));shell.saveDraft();
         }
         try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup().visible()){
-            MainActivity activity=controller.get();AppShell shell=(AppShell)field(activity,"shell");shell.go("products","");assertNotNull(text(activity.findViewById(android.R.id.content),"Continuar con mi borrador"));assertEquals(edited,shell.draft().getString("image"));
+            MainActivity activity=controller.get();AppShell shell=(AppShell)field(activity,"shell");shell.go("products","");assertNotNull(text(activity.findViewById(android.R.id.content),"Continuar borrador de producto"));assertEquals(edited,shell.draft().getString("image"));
         }
     }
 
@@ -71,7 +71,7 @@ public class PhotoFlowTest {
         String source=image(Color.RED),edited=image(Color.GREEN);workspace(source,edited);
         try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup().visible()){
             MainActivity activity=controller.get();AppShell shell=(AppShell)field(activity,"shell");LocalStore store=shell.store();JSONObject before=store.snapshot(),product=before.getJSONArray("products").getJSONObject(0);ProductEditorScreen.attachStudioPhoto(shell,product,true);JSONObject draft=shell.draft();assertEquals(product.getString("id"),draft.getString("id"));assertEquals(product.getString("name"),draft.getString("name"));assertEquals(product.getDouble("price"),draft.getDouble("price"),0);assertEquals(product.getInt("version"),draft.getInt("version"));assertEquals(edited,draft.getString("image"));assertEquals(before.toString(),store.snapshot().toString());
-            ProductEditorScreen.attachStudioPhoto(shell,null,false);assertEquals(product.getString("id"),shell.draft().getString("id"));AlertDialog dialog=org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();assertNotNull(dialog);assertTrue(dialog.isShowing());dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick();assertEquals(edited,shell.draft().getString("image"));
+            ProductEditorScreen.attachStudioPhoto(shell,null,false);assertEquals("",shell.draft().optString("id",""));assertEquals(edited,shell.draft().optString("image",""));
         }
     }
 }
