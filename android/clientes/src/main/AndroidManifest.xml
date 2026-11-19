@@ -1,11 +1,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="pe.manchapp.beta.LOCAL_BRIDGE" />
   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-  <queries><provider android:authorities="pe.manchapp.beta.bridge" /></queries>
+  <queries>
+    <provider android:authorities="pe.manchapp.beta.bridge" />
+    <package android:name="com.bcp.innovacxion.yapeapp" />
+    <package android:name="com.interbank.plin" />
+    <package android:name="com.bbva.nxt_peru" />
+    <package android:name="com.scotiabank.android" />
+  </queries>
   <application android:label="ManchApp Pedidos" android:icon="@drawable/icon" android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true">
-    <activity android:name="pe.manchapp.beta.CustomerActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+    <activity android:name="pe.manchapp.beta.CustomerActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="manchapp" android:host="catalog"/>
+        <data android:scheme="manchapp" android:host="product"/>
+      </intent-filter>
     </activity>
   </application>
 </manifest>

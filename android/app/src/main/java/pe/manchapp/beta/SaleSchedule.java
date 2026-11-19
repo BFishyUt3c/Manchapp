@@ -31,9 +31,28 @@ final class SaleSchedule {
     static boolean announced(JSONObject product,JSONObject defaults,long now){if(product==null||!product.optBoolean("available")||product.optInt("stock")<=0)return false;JSONObject schedule=forProduct(product,defaults);return invalid(schedule).isEmpty()&&schedule.optBoolean("salesOpen")&&parse(schedule.optString("pickupUntil"),false)>now;}
     static JSONObject editable(JSONObject source){JSONObject draft=new JSONObject();try{for(String key:KEYS)if(source.has(key))draft.put(key,source.get(key));if(source.has("pickup"))draft.put("pickup",source.get("pickup"));}catch(JSONException error){throw new IllegalStateException(error);}return draft;}
     static JSONObject copyInto(JSONObject order,JSONObject settings)throws JSONException{for(String key:KEYS)if(settings.has(key))order.put(key,settings.get(key));order.put("pickup",settings.optString("pickup"));return order;}
-    static String next(String status,boolean delivery){switch(status){case "registered":case "confirmed":case "preparing":return "sale_day";case "sale_day":return delivery?"delivering":"pickup_available";case "ready":return delivery?"delivering":"pickup_available";case "pickup_available":case "delivering":return "delivered";default:return "";}}
+    static String next(String status,boolean delivery){switch(status){case "registered":return "confirmed";case "confirmed":case "preparing":return "sale_day";case "sale_day":return delivery?"delivering":"pickup_available";case "ready":return delivery?"delivering":"pickup_available";case "pickup_available":case "delivering":return "delivered";default:return "";}}
     static void checkTransition(JSONObject order,String target,long now)throws Exception{
         if(target.equals("sale_day")||target.equals("delivering")||target.equals("pickup_available")){long date=parse(order.optString("saleDate"),true);if(date<0)throw new Exception("Agrega primero la fecha de venta de este pedido.");if(now<date)throw new Exception("Este pedido corresponde al "+day(order)+".");if(target.equals("pickup_available")){long from=parse(order.optString("pickupFrom"),false),until=parse(order.optString("pickupUntil"),false);if(from<0||until<0||now<from||now>until)throw new Exception("Revisa el intervalo de recojo de este pedido.");}}
+    }
+    /** Move unfinished demo data forward so a fresh install always shows a bookable sale. */
+    static boolean rollDemoIfNeeded(JSONObject catalog,long now)throws JSONException{
+        JSONObject s=catalog.optJSONObject("settings");
+        if(s==null||!s.optBoolean("demo"))return false;
+        long reserve=parse(s.optString("reserveUntil"),false),until=parse(s.optString("pickupUntil"),false);
+        if(reserve<0||until<0||(reserve>now&&until>now))return false;
+        long days=(now-reserve)/86400000L+1,shift=Math.max(1,days)*86400000L;
+        String oldSale=s.optString("saleDate"),oldReserve=s.optString("reserveUntil");
+        shift(s,shift);
+        JSONArray products=catalog.optJSONArray("products");
+        for(int i=0;products!=null&&i<products.length();i++){
+            JSONObject product=products.optJSONObject(i);
+            if(product!=null&&product.optString("saleDate").equals(oldSale)&&product.optString("reserveUntil").equals(oldReserve))shift(product,shift);
+        }
+        return true;
+    }
+    private static void shift(JSONObject value,long millis)throws JSONException{
+        for(int i=0;i<4;i++){String key=KEYS[i];boolean day=key.equals("saleDate");long time=parse(value.optString(key),day);if(time>=0)value.put(key,day?date(time+millis):stamp(time+millis));}
     }
     /** Only replace known initial copy; never overwrite an owner's custom text or old orders. */
     static boolean upgrade(JSONObject catalog,JSONObject defaults)throws JSONException{

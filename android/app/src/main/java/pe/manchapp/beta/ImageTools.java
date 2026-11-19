@@ -10,8 +10,16 @@ import java.io.*;
 
 /** Bounded photo decoding; the list never decodes every photo at full size. */
 final class ImageTools {
-    private final LruCache<String,Bitmap> cache=new LruCache<String,Bitmap>(6*1024*1024){@Override protected int sizeOf(String key,Bitmap bitmap){return bitmap.getByteCount();}};
-    Bitmap thumbnail(String encoded,int edge){if(encoded==null||encoded.isEmpty())return null;String key=encoded.hashCode()+":"+encoded.length()+":"+edge;Bitmap old=cache.get(key);if(old!=null&&!old.isRecycled())return old;try{byte[] bytes=Base64.decode(encoded.substring(encoded.indexOf(',')+1),Base64.DEFAULT);BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;BitmapFactory.decodeByteArray(bytes,0,bytes.length,bounds);BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,edge);Bitmap result=BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);if(result!=null)cache.put(key,result);return result;}catch(Exception|OutOfMemoryError error){return null;}}
+    private final LruCache<String,Bitmap> cache=new LruCache<String,Bitmap>(Math.min(6*1024*1024,(int)(Runtime.getRuntime().maxMemory()/16))){@Override protected int sizeOf(String key,Bitmap bitmap){return bitmap.getByteCount();}};
+    Bitmap thumbnail(String encoded,int edge){return thumbnail(encoded,edge,"");}
+    private Bitmap thumbnail(String encoded,int edge,String idHint){
+        if(encoded==null||encoded.isEmpty())return null;
+        String tail=encoded.length()>32?encoded.substring(encoded.length()-32):encoded;
+        String key=(idHint.isEmpty()?encoded.substring(0,Math.min(24,encoded.length())):idHint)+":"+tail.hashCode()+":"+encoded.length()+":"+edge;
+        Bitmap old=cache.get(key);if(old!=null&&!old.isRecycled())return old;
+        Bitmap result=decodeSampled(encoded,edge,encoded.startsWith("data:image/jpeg"));
+        if(result!=null)cache.put(key,result);return result;
+    }
     static String bundledPhoto(JSONObject product){
         if(product.optBoolean("imageReference",false))return "";
         String id=product.optString("id");
@@ -28,19 +36,43 @@ final class ImageTools {
         }catch(Exception|OutOfMemoryError error){return null;}
     }
     Bitmap productThumbnail(Context context,JSONObject product,int edge){
-        Bitmap custom=thumbnail(product.optString("image"),edge);if(custom!=null)return custom;
+        String id=product.optString("id");
+        Bitmap custom=thumbnail(product.optString("image"),edge,id);if(custom!=null)return custom;
         String path=bundledPhoto(product);if(path.isEmpty())return null;
         String key="asset:"+path+":"+edge;Bitmap old=cache.get(key);if(old!=null&&!old.isRecycled())return old;
         Bitmap result=assetPhoto(context,path,edge);if(result!=null)cache.put(key,result);return result;
     }
     /** Independent bitmap for a flyer; callers can recycle it without touching the thumbnail cache. */
-    static Bitmap productPhoto(Context context,JSONObject product,int edge){Bitmap custom=decode(product.optString("image"));return custom!=null?custom:assetPhoto(context,bundledPhoto(product),edge);}
+    static Bitmap productPhoto(Context context,JSONObject product,int edge){Bitmap custom=decodeSampled(product.optString("image"),edge,false);return custom!=null?custom:assetPhoto(context,bundledPhoto(product),edge);}
+    private static Bitmap decodeSampled(String encoded,int edge,boolean preferRgb565){
+        if(encoded==null||encoded.isEmpty())return null;
+        try{
+            byte[] bytes=Base64.decode(encoded.substring(encoded.indexOf(',')+1),Base64.DEFAULT);
+            BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;BitmapFactory.decodeByteArray(bytes,0,bytes.length,bounds);
+            BitmapFactory.Options options=new BitmapFactory.Options();
+            if(edge>0)options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,edge);
+            if(preferRgb565)options.inPreferredConfig=Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
+        }catch(Exception|OutOfMemoryError error){return null;}
+    }
     static String encodeQr(Bitmap bitmap)throws IOException{
         ByteArrayOutputStream output=new ByteArrayOutputStream();bitmap.compress(Bitmap.CompressFormat.PNG,100,output);
         if(output.size()>600000)throw new IOException("Elige una captura del QR sin bordes ni contenido adicional.");
         return "data:image/png;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);
     }
     static int sample(int width,int height,int edge){int sample=1;while(Math.max(width,height)/(sample*2)>=edge)sample*=2;return sample;}
+    /** Keep editor work bounded; camera photos can be much larger than the preview needs. */
+    static Bitmap limit(Bitmap bitmap,int edge){if(bitmap==null)return null;int longest=Math.max(bitmap.getWidth(),bitmap.getHeight());if(longest<=edge)return bitmap;float scale=edge/(float)longest;return Bitmap.createScaledBitmap(bitmap,Math.max(1,Math.round(bitmap.getWidth()*scale)),Math.max(1,Math.round(bitmap.getHeight()*scale)),true);}
+    static Bitmap decodeFile(File file,int edge)throws IOException{
+        BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;BitmapFactory.decodeFile(file.getAbsolutePath(),bounds);
+        if(bounds.outWidth<=0||bounds.outHeight<=0)throw new IOException("Vuelve a elegir la foto.");
+        BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,edge);
+        Bitmap bitmap=BitmapFactory.decodeFile(file.getAbsolutePath(),options);
+        if(bitmap==null)throw new IOException("Vuelve a elegir la foto.");
+        Bitmap limited=limit(bitmap,edge);
+        if(limited!=bitmap)bitmap.recycle();
+        return limited;
+    }
     static Bitmap read(Context context,Uri uri)throws IOException{
         BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(InputStream input=context.getContentResolver().openInputStream(uri)){BitmapFactory.decodeStream(input,null,bounds);}if(bounds.outWidth<=0||bounds.outHeight<=0)throw new IOException("No pudimos leer la foto.");
         BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,960);Bitmap bitmap;try(InputStream input=context.getContentResolver().openInputStream(uri)){bitmap=BitmapFactory.decodeStream(input,null,options);}if(bitmap==null)throw new IOException("No pudimos leer la foto.");

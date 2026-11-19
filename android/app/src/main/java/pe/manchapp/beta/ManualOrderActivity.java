@@ -17,6 +17,7 @@ public final class ManualOrderActivity extends Activity {
     private LinearLayout body,footer;
     private int step=0;
     private int displayedStep=-1;
+    private boolean saving=false;
     private ScrollView scroll;
     @Override public void onCreate(Bundle state){
         super.onCreate(state);ui=new NativeUi(this);try{store=LocalStore.open(this);if(state!=null){quantities=new JSONObject(state.getString("quantities","{}"));details=new JSONObject(state.getString("details","{}"));step=state.getInt("step",0);}else if(getIntent().hasExtra("restoreDraft")){JSONObject old=new JSONObject(getIntent().getStringExtra("restoreDraft"));details=old;JSONArray items=old.optJSONArray("items");for(int i=0;items!=null&&i<items.length();i++)quantities.put(items.getJSONObject(i).optString("productId"),items.getJSONObject(i).optInt("quantity"));}}catch(Exception error){RecoveryScreen.show(this,error);return;}
@@ -69,8 +70,9 @@ public final class ManualOrderActivity extends Activity {
     }
     private void capture(){for(Map.Entry<String,EditText> entry:fields.entrySet()){String value=entry.getValue().getText().toString().trim();if(entry.getKey().equals("address")&&!value.equals(details.optString("address")))details.remove("deliveryLocation");put(details,entry.getKey(),value);}}
     private void review(){
+        if(details.optString("requestId").isEmpty())put(details,"requestId",UUID.randomUUID().toString());
         try{JSONObject order=OrderDraft.build(store.snapshot(),details,quantities,true,System.currentTimeMillis());StringBuilder text=new StringBuilder(details.optString("customer")).append("\n").append(SaleSchedule.day(order)).append("\n");JSONArray items=order.getJSONArray("items");for(int i=0;i<items.length();i++)text.append("\n").append(items.getJSONObject(i).optInt("quantity")).append(" × ").append(items.getJSONObject(i).optString("name"));text.append("\n\nTotal: ").append(cash(order.optDouble("total"))).append("\n").append(order.optString("fulfillment").equals("delivery")?"Delivery: "+order.optString("address"):"Recojo en la olla");
-            new AlertDialog.Builder(this).setTitle("¿Están bien los datos?").setMessage(text.toString()).setNegativeButton("Volver",null).setPositiveButton("Registrar pedido",(dialog,which)->{try{JSONObject saved=store.manualOrder(details,quantities);setResult(RESULT_OK,new Intent().putExtra("orderId",saved.optString("id")));finish();}catch(Exception error){toast(error.getMessage());}}).show();
+            new AlertDialog.Builder(this).setTitle("¿Están bien los datos?").setMessage(text.toString()).setNegativeButton("Volver",null).setPositiveButton("Registrar pedido",(dialog,which)->{if(saving)return;saving=true;try{JSONObject saved=store.manualOrder(details,quantities);setResult(RESULT_OK,new Intent().putExtra("orderId",saved.optString("id")));finish();}catch(Exception error){saving=false;toast(error.getMessage());}}).show();
         }catch(Exception error){toast(error.getMessage());}
     }
     private void toast(String message){Toast.makeText(this,message,Toast.LENGTH_LONG).show();}

@@ -6,26 +6,60 @@ import org.json.*;
 
 final class FlyerRenderer {
     static Bitmap render(JSONArray products,JSONObject settings,String message,int style,boolean square,NativeUi ui){
-        if(products.length()==1)return render(products.optJSONObject(0),settings,message,style,square,ui);if(products.length()<1||products.length()>4)throw new IllegalArgumentException("Elige entre 1 y 4 productos.");
-        int height=square?720:1280,accent=style==1?NativeUi.CORAL:style==2?NativeUi.GREEN:NativeUi.WINE;Bitmap result=Bitmap.createBitmap(720,height,Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(result);Paint paint=new Paint(3);canvas.drawColor(NativeUi.BG);paint.setColor(accent);canvas.drawRect(0,0,720,square?88:116,paint);block(canvas,"MANCHAPP",30,22,650,30,Color.WHITE,ui.heavy,1);block(canvas,settings.optString("name"),30,square?56:66,650,square?17:22,0xffffe0b4,ui.bold,1);
-        block(canvas,style==1?"ELIGE TUS FAVORITOS":style==2?"VENTA PROGRAMADA":"HECHO EN COMUNIDAD",30,square?106:142,650,square?18:24,accent,ui.heavy,1);block(canvas,SaleSchedule.day(settings),30,square?137:184,650,square?20:32,NativeUi.INK,ui.bold,square?1:2);
-        int rows=(products.length()+1)/2;float top=square?178:280,bottom=square?561:994,gap=square?12:18,cellWidth=322,cellHeight=(bottom-top-gap*(rows-1))/rows;
-        for(int i=0;i<products.length();i++){JSONObject product=products.optJSONObject(i);float x=30+(i%2)*338,y=top+(i/2)*(cellHeight+gap);paint.setColor(NativeUi.CARD);canvas.drawRoundRect(x,y,x+cellWidth,y+cellHeight,18,18,paint);boolean compact=square&&rows==2;float photoHeight=cellHeight-(compact?64:square?83:114);photo(canvas,paint,product,new RectF(x+8,y+6,x+cellWidth-8,y+photoHeight),ui);block(canvas,product.optString("name"),x+12,y+photoHeight+4,298,square?19:27,NativeUi.INK,ui.heavy,compact?1:2);String amount=price(product)+" · "+SaleRules.unit(product.optString("saleUnit",SaleRules.defaultUnit(product.optString("category"))));block(canvas,amount,x+12,y+cellHeight-(square?28:43),298,square?18:24,accent,ui.bold,1);}
-        if(!square)block(canvas,message,32,1014,650,22,NativeUi.MUTED,ui.regular,2);footer(canvas,paint,settings,square?582:1080,square,accent,ui);return result;
+        return render(products,settings,message,style,square?1:0,ui);
+    }
+    static Bitmap render(JSONArray products,JSONObject settings,String message,int style,int format,NativeUi ui){
+        boolean square=format==1;boolean flash=format==2;
+        if(products.length()==1)return render(products.optJSONObject(0),settings,message,style,format,ui);if(products.length()<1||products.length()>4)throw new IllegalArgumentException("Elige entre 1 y 4 productos.");
+        int height=square?720:1280,accent=style==1?NativeUi.CORAL:style==2?NativeUi.GREEN:NativeUi.WINE;Bitmap result=Bitmap.createBitmap(720,height,Bitmap.Config.RGB_565);Canvas canvas=new Canvas(result);Paint paint=new Paint(3);
+        canvas.drawColor(flash?NativeUi.DEEP:NativeUi.BG);paint.setColor(accent);canvas.drawRect(0,0,720,square?88:116,paint);
+        block(canvas,flash?"OFERTA DE HOY · MANCHAPP":"MANCHAPP",30,22,650,30,Color.WHITE,ui.heavy,1);block(canvas,settings.optString("name"),30,square?56:66,650,square?17:22,0xffffe0b4,ui.bold,1);
+        int headlineColor=flash?NativeUi.GOLD:accent;int subColor=flash?NativeUi.CARD:NativeUi.INK;
+        block(canvas,style==1?"ELIGE TUS FAVORITOS":style==2?"VENTA PROGRAMADA":"HECHO EN COMUNIDAD",30,square?106:142,650,square?18:24,headlineColor,ui.heavy,1);block(canvas,SaleSchedule.day(settings),30,square?137:184,650,square?20:32,subColor,ui.bold,square?1:2);
+        int count=products.length();int rows=(count+1)/2;float top=square?178:280,bottom=square?561:994,gap=square?12:18,cellWidth=322,cellHeight=(bottom-top-gap*(rows-1))/rows;
+        for(int i=0;i<count;i++){
+            JSONObject product=products.optJSONObject(i);
+            boolean spanWide=count==3&&i==2;
+            float x=spanWide?30:30+(i%2)*338,y=top+(i/2)*(cellHeight+gap),w=spanWide?660:cellWidth;
+            paint.setColor(NativeUi.CARD);canvas.drawRoundRect(x,y,x+w,y+cellHeight,18,18,paint);
+            boolean compact=square&&rows==2&&!spanWide;float photoHeight=cellHeight-(compact?64:square?83:114);
+            photo(canvas,paint,product,new RectF(x+8,y+6,x+w-8,y+photoHeight),ui);
+            block(canvas,product.optString("name"),x+12,y+photoHeight+4,(int)w-24,square?19:27,NativeUi.INK,ui.heavy,compact?1:2);
+            String amount=price(product)+" · "+SaleRules.unit(product.optString("saleUnit",SaleRules.defaultUnit(product.optString("category"))));
+            block(canvas,amount,x+12,y+cellHeight-(square?28:43),(int)w-24,square?18:24,accent,ui.bold,1);
+        }
+        if(flash){paint.setColor(NativeUi.BG);canvas.drawRoundRect(20,1060,700,1260,22,22,paint);}
+        if(!square)block(canvas,message,32,1014,650,22,flash?NativeUi.GOLD:NativeUi.MUTED,ui.regular,2);footer(canvas,paint,settings,square?582:1080,square,accent,ui);return result;
     }
     private static float block(Canvas canvas,String value,float x,float y,int width,int size,int color,Typeface font,int lines){
         String text=value==null?"":value;TextPaint paint=new TextPaint(3);paint.setColor(color);paint.setTextSize(size);paint.setTypeface(font);StaticLayout layout=StaticLayout.Builder.obtain(text,0,text.length(),paint,width).setMaxLines(lines).setEllipsize(TextUtils.TruncateAt.END).setLineSpacing(3,1).setIncludePad(false).build();canvas.save();canvas.translate(x,y);layout.draw(canvas);canvas.restore();return layout.getHeight();
     }
-    static Bitmap render(JSONObject product,JSONObject settings,String message,int style,NativeUi ui){return render(product,settings,message,style,false,ui);}
-    static Bitmap render(JSONObject product,JSONObject settings,String message,int style,boolean square,NativeUi ui){
-        int height=square?720:1280;Bitmap result=Bitmap.createBitmap(720,height,Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(result);Paint paint=new Paint(3);int accent=style==1?NativeUi.CORAL:style==2?NativeUi.GREEN:NativeUi.WINE;canvas.drawColor(NativeUi.BG);
-        paint.setColor(accent);canvas.drawRect(0,0,720,square?88:116,paint);block(canvas,"MANCHAPP",30,22,360,30,Color.WHITE,ui.heavy,1);block(canvas,settings.optString("name"),30,square?56:66,650,square?17:22,0xffffe0b4,ui.bold,1);
-        if(square)drawSquare(canvas,paint,product,settings,message,style,accent,ui);else drawVertical(canvas,paint,product,settings,message,style,accent,ui);
+    static Bitmap render(JSONObject product,JSONObject settings,String message,int style,NativeUi ui){return render(product,settings,message,style,0,ui);}
+    static Bitmap render(JSONObject product,JSONObject settings,String message,int style,boolean square,NativeUi ui){return render(product,settings,message,style,square?1:0,ui);}
+    static Bitmap render(JSONObject product,JSONObject settings,String message,int style,int format,NativeUi ui){
+        boolean square=format==1;boolean flash=format==2;
+        int height=square?720:1280;Bitmap result=Bitmap.createBitmap(720,height,Bitmap.Config.RGB_565);Canvas canvas=new Canvas(result);Paint paint=new Paint(3);int accent=style==1?NativeUi.CORAL:style==2?NativeUi.GREEN:NativeUi.WINE;canvas.drawColor(flash?NativeUi.DEEP:NativeUi.BG);
+        paint.setColor(accent);canvas.drawRect(0,0,720,square?88:116,paint);block(canvas,flash?"OFERTA DE HOY · MANCHAPP":"MANCHAPP",30,22,520,30,Color.WHITE,ui.heavy,1);block(canvas,settings.optString("name"),30,square?56:66,650,square?17:22,0xffffe0b4,ui.bold,1);
+        if(square)drawSquare(canvas,paint,product,settings,message,style,accent,ui);
+        else if(flash)drawStoryFlash(canvas,paint,product,settings,message,style,accent,ui);
+        else drawVertical(canvas,paint,product,settings,message,style,accent,ui);
         return result;
+    }
+    private static void drawStoryFlash(Canvas canvas,Paint paint,JSONObject product,JSONObject settings,String message,int style,int accent,NativeUi ui){
+        block(canvas,style==1?"COMBO ESPECIAL":style==2?"PRÓXIMA VENTA":"RESERVA HOY",32,140,650,24,NativeUi.GOLD,ui.heavy,1);
+        block(canvas,product.optString("name"),32,178,656,44,Color.WHITE,ui.heavy,2);
+        photo(canvas,paint,product,new RectF(32,292,688,730),ui);
+        paint.setColor(NativeUi.GOLD);canvas.drawRoundRect(32,756,370,852,22,22,paint);
+        block(canvas,price(product),52,764,298,price(product).length()>9?42:60,NativeUi.DEEP,ui.heavy,1);
+        block(canvas,SaleRules.unit(product.optString("saleUnit",SaleRules.defaultUnit(product.optString("category")))),392,778,296,24,Color.WHITE,ui.bold,2);
+        block(canvas,"VENTA: "+SaleSchedule.day(settings),32,882,650,24,NativeUi.GOLD,ui.bold,2);
+        block(canvas,message,32,960,650,22,NativeUi.CARD,ui.regular,2);
+        paint.setColor(NativeUi.BG);canvas.drawRoundRect(20,1060,700,1260,22,22,paint);
+        footer(canvas,paint,settings,1080,false,accent,ui);
     }
     private static String price(JSONObject product){return java.text.NumberFormat.getCurrencyInstance(new java.util.Locale("es","PE")).format(product.optDouble("price"));}
     private static void photo(Canvas canvas,Paint paint,JSONObject product,RectF frame,NativeUi ui){
-        paint.setColor(NativeUi.CARD);canvas.drawRoundRect(frame,25,25,paint);Bitmap image=ImageTools.productPhoto(ui.context,product,960);
+        paint.setColor(NativeUi.CARD);canvas.drawRoundRect(frame,25,25,paint);Bitmap image=ImageTools.productPhoto(ui.context,product,640);
         if(image!=null){float padding=frame.height()<140?12:24;float scale=Math.min((frame.width()-padding)/image.getWidth(),(frame.height()-padding)/image.getHeight()),width=image.getWidth()*scale,height=image.getHeight()*scale;canvas.drawBitmap(image,null,new RectF(frame.centerX()-width/2,frame.centerY()-height/2,frame.centerX()+width/2,frame.centerY()+height/2),paint);image.recycle();}
         else{DishArt art=new DishArt(product.optString("illustration","papa"));art.setBounds((int)frame.left+15,(int)frame.top+15,(int)frame.right-15,(int)frame.bottom-15);art.draw(canvas);block(canvas,"ILUSTRACIÓN REFERENCIAL",frame.left+16,frame.bottom-26,(int)frame.width()-32,13,NativeUi.INK,ui.bold,1);}
     }

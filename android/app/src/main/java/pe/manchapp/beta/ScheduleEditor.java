@@ -10,6 +10,16 @@ final class ScheduleEditor {
     static void draw(Activity activity,NativeUi ui,LinearLayout content,JSONObject draft,Runnable refresh){
         ui.add(content,ui.heading("Programa tu venta",27),0);
         ui.add(content,ui.text("Elige cuándo venderá la olla y hasta cuándo recibirás reservas.",16,NativeUi.MUTED,false),7);
+        LinearLayout quick=new LinearLayout(activity);
+        String[] presetLabels={"Hoy","Mañana","Sábado"};
+        for(int i=0;i<presetLabels.length;i++){
+            final int mode=i;
+            android.widget.TextView chip=ui.button(presetLabels[i],false,null,()->applyPreset(draft,mode,refresh));
+            chip.setTextSize(13);chip.setMinHeight(ui.dp(44));chip.setPadding(ui.dp(6),ui.dp(6),ui.dp(6),ui.dp(6));
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);if(i<2)lp.rightMargin=ui.dp(6);
+            quick.addView(chip,lp);
+        }
+        ui.add(content,quick,12);
         entry(activity,ui,content,draft,"saleDate","Día de venta",true,refresh);
         entry(activity,ui,content,draft,"reserveUntil","Recibir reservas hasta",false,refresh);
         ui.add(content,ui.heading("Recojo en la olla",22),23);
@@ -33,6 +43,25 @@ final class ScheduleEditor {
             if(day)done.accept(SaleSchedule.date(time.getTimeInMillis()));
             else new TimePickerDialog(activity,(clock,hour,minute)->{time.set(Calendar.HOUR_OF_DAY,hour);time.set(Calendar.MINUTE,minute);done.accept(SaleSchedule.stamp(time.getTimeInMillis()));},time.get(Calendar.HOUR_OF_DAY),time.get(Calendar.MINUTE),false).show();
         },time.get(Calendar.YEAR),time.get(Calendar.MONTH),time.get(Calendar.DAY_OF_MONTH));date.show();
+    }
+    private static void applyPreset(JSONObject draft,int mode,Runnable refresh){
+        Calendar c=Calendar.getInstance(SaleSchedule.LIMA);
+        if(mode==1)c.add(Calendar.DAY_OF_MONTH,1);
+        else if(mode==2){int delta=(Calendar.SATURDAY-c.get(Calendar.DAY_OF_WEEK)+7)%7;if(delta==0)delta=7;c.add(Calendar.DAY_OF_MONTH,delta);}
+        c.set(Calendar.SECOND,0);c.set(Calendar.MILLISECOND,0);
+        int hour=c.get(Calendar.HOUR_OF_DAY);
+        if(mode==0&&hour>=17)c.add(Calendar.DAY_OF_MONTH,1);
+        put(draft,"saleDate",SaleSchedule.date(c.getTimeInMillis()));
+        if(mode==0&&hour>=14&&hour<17){
+            c.add(Calendar.HOUR_OF_DAY,1);c.set(Calendar.MINUTE,0);put(draft,"reserveUntil",SaleSchedule.stamp(c.getTimeInMillis()));
+            c.add(Calendar.HOUR_OF_DAY,2);put(draft,"pickupFrom",SaleSchedule.stamp(c.getTimeInMillis()));
+            c.add(Calendar.HOUR_OF_DAY,2);put(draft,"pickupUntil",SaleSchedule.stamp(c.getTimeInMillis()));
+        }else{
+            c.set(Calendar.HOUR_OF_DAY,14);c.set(Calendar.MINUTE,0);put(draft,"reserveUntil",SaleSchedule.stamp(c.getTimeInMillis()));
+            c.set(Calendar.HOUR_OF_DAY,17);c.set(Calendar.MINUTE,0);put(draft,"pickupFrom",SaleSchedule.stamp(c.getTimeInMillis()));
+            c.set(Calendar.HOUR_OF_DAY,19);c.set(Calendar.MINUTE,0);put(draft,"pickupUntil",SaleSchedule.stamp(c.getTimeInMillis()));
+        }
+        refresh.run();
     }
     private static void put(JSONObject object,String key,Object value){try{object.put(key,value);}catch(JSONException error){throw new IllegalStateException(error);}}
 }
