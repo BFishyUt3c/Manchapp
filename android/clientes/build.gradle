@@ -8,8 +8,8 @@ android {
         applicationId 'pe.manchapp.pedidos'
         minSdk 24
         targetSdk 28
-        versionCode 8
-        versionName '0.8.0'
+        versionCode 9
+        versionName '3.001'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8

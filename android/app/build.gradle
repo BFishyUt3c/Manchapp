@@ -10,8 +10,8 @@ android {
         applicationId 'pe.manchapp.beta'
         minSdk 24
         targetSdk 28
-        versionCode 16
-        versionName '0.8.0'
+        versionCode 17
+        versionName '3.001'
     }
 
     sourceSets { main { assets.srcDirs += ['src/sellerAssets'] } }
