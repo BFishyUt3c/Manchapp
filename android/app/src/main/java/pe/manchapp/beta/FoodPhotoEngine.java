@@ -74,7 +74,20 @@ final class FoodPhotoEngine implements AutoCloseable {
             flat.convertTo(soft,CvType.CV_32F,1/(range.maxVal-range.minVal),-range.minVal/(range.maxVal-range.minVal));
             smallMask=soft.clone();if(includeObjects)completeObjects(small,soft);
             candidate=allowMask(soft);mask=candidate;if(includeObjects)completeMask=mask;else plainMask=mask;candidate=null;maskMillis=android.os.SystemClock.elapsedRealtime()-start;maskRuns++;
-        }catch(IOException error){throw error;}catch(RuntimeException error){throw new IOException("No pudimos separar el fondo de esta foto. Puedes usar la mejora natural.",error);}finally{small.release();floats.release();release(channels);if(blob!=null)blob.release();if(flat!=null)flat.release();if(prediction!=null)prediction.release();soft.release();if(candidate!=null)candidate.release();}
+        }catch(IOException error){throw error;}catch(RuntimeException error){
+            try{
+                Mat rgb=new Mat();
+                try{
+                    soft.create(320,320,CvType.CV_32F);soft.setTo(new Scalar(0));
+                    Imgproc.resize(original,rgb,new Size(320,320));
+                    completeObjects(rgb,soft);
+                    smallMask=soft.clone();
+                    mask=finishMask(soft,false);
+                    maskMillis=android.os.SystemClock.elapsedRealtime()-start;maskRuns++;
+                    return;
+                }finally{rgb.release();}
+            }catch(Exception fallback){throw new IOException("No pudimos separar el fondo de esta foto. Puedes usar la mejora natural. ("+error.getClass().getSimpleName()+")",error);}
+        }finally{small.release();floats.release();release(channels);if(blob!=null)blob.release();if(flat!=null)flat.release();if(prediction!=null)prediction.release();soft.release();if(candidate!=null)candidate.release();}
     }
     private Mat allowMask(Mat soft)throws IOException{
         try{return finishMask(soft);}catch(IOException strict){Mat rgb=new Mat();try{Imgproc.resize(original,rgb,new Size(320,320));completeObjects(rgb,soft);return finishMask(soft,false);}finally{rgb.release();}}
