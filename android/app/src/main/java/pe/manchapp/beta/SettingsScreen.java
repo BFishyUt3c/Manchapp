@@ -13,13 +13,14 @@ final class SettingsScreen {
 
     static void showSettings(AppShell shell) {
         JSONObject s = shell.data().optJSONObject("settings");
+        String name = s.optString("name").isEmpty() ? "Tu emprendimiento" : s.optString("name");
         shell.title("Configuración", "Datos que aparecen en productos, pedidos y afiches.");
         LinearLayout c = shell.card();
-        shell.add(c, shell.text(s.optString("name"), 22, NativeUi.WINE, true), 0);
-        shell.add(c, shell.text("Emprendimiento de la olla común · Manchay", 14, NativeUi.MUTED, false), 6);
+        shell.add(c, shell.text(name, 22, NativeUi.WINE, true), 0);
+        shell.add(c, shell.text("Emprendimiento de la olla común", 14, NativeUi.MUTED, false), 6);
         shell.add(shell.content(), c, 18);
-        shell.menu("Datos de Manka Kusi", "Nombre, punto de recojo, contacto y referencia", "products", () -> shell.go("profile", ""));
-        shell.menu("Reparto cercano", "Cobertura hasta 2 km y tarifas", "truck", () -> shell.go("delivery", ""));
+        shell.menu("Datos de " + name, "Nombre, punto de recojo, contacto y referencia", "products", () -> shell.go("profile", ""));
+        shell.menu("Reparto cercano", "Cobertura por distancia y tarifas", "truck", () -> shell.go("delivery", ""));
         shell.menu("Pagos y QR", "Yape, Plin y confirmación manual", "pay", () -> shell.go("payments", ""));
         shell.menu("Guardar copia de seguridad", "Conserva productos, pedidos y cambios pendientes en un archivo", "orders", () -> exportBackup(shell));
         shell.menu("Ayuda para tus fotos", "Consejos sencillos antes de editar", "help", () -> shell.go("help", ""));
@@ -27,29 +28,36 @@ final class SettingsScreen {
 
     static void showProfile(AppShell shell) {
         JSONObject s = shell.data().optJSONObject("settings");
-        shell.title("Así encontrarán a Manka Kusi", "Estos datos aparecen en el catálogo, pedidos y afiches.");
-        shell.field("name", "Nombre del emprendimiento", s.optString("name"), "Nombre", false);
+        boolean isFirstSetup = s.optString("name").isEmpty() || s.optString("pickup").isEmpty() || s.optString("phone").isEmpty();
+        shell.title(
+                isFirstSetup ? "Configura tu olla" : "Datos de tu olla",
+                "Estos datos aparecen en el catálogo, pedidos y afiches."
+        );
+        shell.field("name", "Nombre del emprendimiento", s.optString("name"), "Ej. Olla Común Las Flores", false);
         shell.field("pickup", "Lugar de recojo y referencia", s.optString("pickup"), "Indica un punto fácil de reconocer", false);
-        LinearLayout location = shell.ui().message("UBICACIÓN DE REFERENCIA",
-                s.optString("pickup", "Frente a la Institución Educativa Los Jardines de Manchay"), NativeUi.GOLD);
-        double latitude = s.optDouble("latitude", Double.NaN), longitude = s.optDouble("longitude", Double.NaN);
-        if (Double.isFinite(latitude) && Double.isFinite(longitude)) {
-            shell.add(location, shell.ui().button("Abrir en la app de mapas", false, "pin", () -> {
-                try {
-                    String label = Uri.encode(s.optString("name", "Manka Kusi"));
-                    shell.activity().startActivity(new Intent(Intent.ACTION_VIEW,
-                            Uri.parse("geo:" + latitude + "," + longitude + "?q=" + latitude + "," + longitude + "(" + label + ")")));
-                } catch (Exception error) {
-                    shell.toast("No hay una app de mapas disponible. La referencia escrita se conserva.");
-                }
-            }), 10);
+
+        if (!s.optString("pickup").isEmpty()) {
+            LinearLayout location = shell.ui().message("UBICACIÓN DE REFERENCIA", s.optString("pickup"), NativeUi.GOLD);
+            double latitude = s.optDouble("latitude", Double.NaN), longitude = s.optDouble("longitude", Double.NaN);
+            if (Double.isFinite(latitude) && Double.isFinite(longitude)) {
+                shell.add(location, shell.ui().button("Abrir en la app de mapas", false, "pin", () -> {
+                    try {
+                        String label = Uri.encode(s.optString("name", "Punto de recojo"));
+                        shell.activity().startActivity(new Intent(Intent.ACTION_VIEW,
+                                Uri.parse("geo:" + latitude + "," + longitude + "?q=" + latitude + "," + longitude + "(" + label + ")")));
+                    } catch (Exception error) {
+                        shell.toast("No hay una app de mapas disponible. La referencia escrita se conserva.");
+                    }
+                }), 10);
+            }
+            shell.add(shell.content(), location, 12);
         }
-        shell.add(shell.content(), location, 12);
-        shell.field("phone", "Celular de contacto", s.optString("phone"), "9 dígitos, empieza con 9", false)
+
+        shell.field("phone", "Celular de contacto (WhatsApp)", s.optString("phone"), "Ej. 932 232 123", false)
                 .setInputType(InputType.TYPE_CLASS_PHONE);
-        shell.note("El celular es opcional. Puedes agregarlo ahora o completarlo más adelante.");
-        shell.field("hours", "Información de atención", s.optString("hours"), "Días y horas", false);
-        shell.primary("Guardar datos", () -> {
+        shell.field("hours", "Información de atención (opcional)", s.optString("hours"), "Ej. Sábados y domingos de 12 a 5 p. m.", false);
+
+        shell.primary(isFirstSetup ? "Guardar y continuar" : "Guardar datos", () -> {
             if (shell.value("name").length() < 2) {
                 shell.editorError("name", "Escribe el nombre del emprendimiento.");
                 return;
@@ -58,22 +66,24 @@ final class SettingsScreen {
                 shell.editorError("pickup", "Indica el lugar de recojo y una referencia.");
                 return;
             }
-            if (!shell.value("phone").isEmpty() && !shell.value("phone").matches("9[0-9]{8}")) {
-                shell.editorError("phone", "Escribe 9 dígitos, empezando con 9.");
+            String cleanPhone = shell.value("phone").replaceAll("\\D+", "");
+            if (!cleanPhone.matches("9[0-9]{8}")) {
+                shell.editorError("phone", "Escribe 9 dígitos empezando con 9 (ej. 932 232 123).");
                 return;
             }
             JSONObject settings = shell.data().optJSONObject("settings");
-            for (String key : new String[]{"name", "pickup", "phone", "hours"}) {
-                AppShell.put(settings, key, shell.value(key));
-            }
-            shell.enqueue("settings", settings, "settings");
+            AppShell.put(settings, "name", shell.value("name"));
+            AppShell.put(settings, "pickup", shell.value("pickup"));
+            AppShell.put(settings, "phone", cleanPhone);
+            AppShell.put(settings, "hours", shell.value("hours"));
+            shell.enqueue("settings", settings, isFirstSetup ? "home" : "settings");
         });
     }
 
     static void showDelivery(AppShell shell) {
         JSONObject s = shell.data().optJSONObject("settings");
         LinearLayout content = shell.content();
-        shell.title("Delivery cercano", "Cada sector define hasta dónde llega el reparto desde Manka Kusi.");
+        shell.title("Delivery cercano", "Activa los sectores donde reparten y ajusta su tarifa y distancia.");
         JSONArray zones = s.optJSONArray("zones");
         for (int i = 0; zones != null && i < zones.length(); i++) {
             JSONObject z = zones.optJSONObject(i);
@@ -101,49 +111,64 @@ final class SettingsScreen {
         });
     }
 
+    private static EditText styledDialogField(AppShell shell, LinearLayout parent, String label, String value, String hint, boolean numeric) {
+        shell.add(parent, shell.text(label, 14, NativeUi.INK, true), 12);
+        EditText e = new EditText(shell.activity());
+        e.setTextSize(17);
+        e.setTypeface(shell.regular());
+        e.setTextColor(NativeUi.INK);
+        e.setHintTextColor(NativeUi.MUTED);
+        e.setHint(hint);
+        e.setPadding(shell.dp(13), shell.dp(12), shell.dp(13), shell.dp(12));
+        e.setBackground(shell.bg(NativeUi.CARD, NativeUi.LINE, 12));
+        e.setMinHeight(shell.dp(50));
+        e.setInputType(numeric
+                ? InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        e.setText(value);
+        shell.add(parent, e, 6);
+        return e;
+    }
+
     static void editZone(AppShell shell, int index) {
         MainActivity activity = shell.activity();
         JSONObject settings = shell.data().optJSONObject("settings");
         JSONArray zones = settings.optJSONArray("zones");
         JSONObject current = index >= 0 && zones != null ? zones.optJSONObject(index) : new JSONObject();
         final JSONObject z = current == null ? new JSONObject() : current;
+        final String zoneName = z.optString("name", "Sector de reparto");
+
+        ScrollView wrapper = new ScrollView(activity);
+        wrapper.setBackgroundColor(NativeUi.BG);
         LinearLayout form = shell.column();
-        form.setPadding(shell.dp(22), shell.dp(8), shell.dp(22), 0);
-        EditText name = new EditText(activity), fee = new EditText(activity), maxKm = new EditText(activity), reference = new EditText(activity);
-        name.setHint("Nombre del sector");
-        name.setText(z.optString("name"));
-        fee.setHint("Tarifa de reparto (S/)");
-        fee.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        if (z.has("fee")) fee.setText(z.optString("fee"));
-        maxKm.setHint("Cobertura máxima (km)");
-        maxKm.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        maxKm.setText(z.has("maxKm") ? z.optString("maxKm") : "2");
-        reference.setHint("Acceso o punto de encuentro");
-        reference.setText(z.optString("note"));
+        form.setPadding(shell.dp(20), shell.dp(14), shell.dp(20), shell.dp(16));
+        wrapper.addView(form);
+
+        EditText fee = styledDialogField(shell, form, "Tarifa de reparto (S/)",
+                z.has("fee") ? z.optString("fee") : "", "Ej. 3.00", true);
+        EditText maxKm = styledDialogField(shell, form, "Cobertura máxima (km)",
+                z.has("maxKm") ? z.optString("maxKm") : "2", "Ej. 2", true);
+        EditText reference = styledDialogField(shell, form, "Referencia o punto de encuentro (opcional)",
+                z.optString("note"), "Ej. Hasta el paradero principal", false);
+
         Switch enabled = new Switch(activity);
-        enabled.setText("Sector habilitado");
+        enabled.setText("Sector habilitado para reparto");
+        enabled.setTextSize(15);
+        enabled.setTextColor(NativeUi.INK);
+        enabled.setTypeface(shell.regular());
         enabled.setChecked(z.optBoolean("enabled", false));
-        for (EditText e : new EditText[]{name, fee, maxKm, reference}) {
-            e.setTextSize(17);
-            e.setTypeface(shell.regular());
-            e.setMinHeight(shell.dp(56));
-            form.addView(e);
-        }
-        form.addView(enabled);
+        shell.add(form, enabled, 16);
+
         AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle(index >= 0 ? "Editar sector" : "Nuevo sector")
-                .setView(form)
-                .setNegativeButton("Volver", null)
-                .setPositiveButton("Guardar sector", null)
+                .setTitle(zoneName)
+                .setView(wrapper)
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Guardar", null)
                 .create();
         dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             try {
-                double amount = Double.parseDouble(fee.getText().toString().replace(',', '.'));
-                double distance = Double.parseDouble(maxKm.getText().toString().replace(',', '.'));
-                if (name.getText().toString().trim().length() < 2) {
-                    name.setError("Escribe el nombre del sector.");
-                    return;
-                }
+                double amount = Double.parseDouble(fee.getText().toString().trim().replace(',', '.'));
+                double distance = Double.parseDouble(maxKm.getText().toString().trim().replace(',', '.'));
                 if (!Double.isFinite(amount) || amount < 0 || amount >= 500) {
                     fee.setError("Escribe una tarifa válida entre 0 y 499.");
                     return;
@@ -154,7 +179,7 @@ final class SettingsScreen {
                 }
                 JSONObject change = LocalStore.copy(z);
                 change.put("id", z.optString("id", UUID.randomUUID().toString()))
-                        .put("name", name.getText().toString().trim())
+                        .put("name", zoneName)
                         .put("fee", amount)
                         .put("maxKm", distance)
                         .put("note", reference.getText().toString().trim())
@@ -178,8 +203,11 @@ final class SettingsScreen {
         JSONObject settings = shell.data().optJSONObject("settings");
         String encoded = settings.optString("paymentImage");
         String mode = settings.optString("paymentMode", settings.optBoolean("cashOnly", false) && encoded.isEmpty() ? "cash" : "both");
+        if (mode.isEmpty()) mode = "both";
         String[] modes = {"both", "yape", "plin", "cash"};
         int modeIndex = Math.max(0, java.util.Arrays.asList(modes).indexOf(mode));
+        boolean paymentReady = !encoded.isEmpty() || settings.optBoolean("cashOnly", false)
+                || SaleRules.validPhone(settings.optString("walletPhone"));
 
         shell.title("Pagos a tu manera", "Yape, Plin o efectivo. Tú confirmas lo recibido.");
         shell.add(content, shell.text("Billeteras y medios habilitados", 15, NativeUi.INK, true), 10);
@@ -191,22 +219,23 @@ final class SettingsScreen {
         });
 
         if (!"cash".equals(mode)) {
+            final String activeMode = mode;
             shell.field("walletPhone", "Celular Yape / Plin",
                     settings.optString("walletPhone", settings.optString("phone")),
-                    "9 dígitos, empieza con 9", false).setInputType(InputType.TYPE_CLASS_PHONE);
+                    "Ej. 932 232 123", false).setInputType(InputType.TYPE_CLASS_PHONE);
             shell.field("walletHolder", "Titular del QR o cuenta",
                     settings.optString("walletHolder", settings.optString("name")),
                     "Nombre que verá el cliente al transferir", false);
             shell.add(content, shell.button("Guardar número y titular", false, () -> {
-                String phone = shell.value("walletPhone");
-                if (!phone.isEmpty() && !SaleRules.validPhone(phone)) {
-                    shell.editorError("walletPhone", "Escribe 9 dígitos, empezando con 9.");
+                String cleanPhone = shell.value("walletPhone").replaceAll("\\D+", "");
+                if (!cleanPhone.isEmpty() && !SaleRules.validPhone(cleanPhone)) {
+                    shell.editorError("walletPhone", "Escribe 9 dígitos empezando con 9 (ej. 932 232 123).");
                     return;
                 }
                 JSONObject s2 = shell.data().optJSONObject("settings");
-                AppShell.put(s2, "walletPhone", phone);
+                AppShell.put(s2, "walletPhone", cleanPhone);
                 AppShell.put(s2, "walletHolder", shell.value("walletHolder"));
-                AppShell.put(s2, "paymentMode", mode);
+                AppShell.put(s2, "paymentMode", activeMode);
                 AppShell.put(s2, "cashOnly", false);
                 shell.enqueue("settings", s2, "payments");
             }), 10);
@@ -237,10 +266,14 @@ final class SettingsScreen {
                 JSONObject s2 = shell.data().optJSONObject("settings");
                 AppShell.put(s2, "paymentMode", "cash");
                 AppShell.put(s2, "cashOnly", true);
-                shell.enqueue("settings", s2, "settings");
+                shell.enqueue("settings", s2, shell.history().isEmpty() ? "home" : "settings");
             }), 10);
         }
         shell.note("El QR y número guardado se muestran al cliente en su pedido. Revisa siempre el efectivo o el abono antes de confirmar el pago.");
+
+        if (paymentReady) {
+            shell.primary("Listo, ir al inicio", () -> shell.go("home", ""));
+        }
     }
 
     static void showQrPreview(AppShell shell) {

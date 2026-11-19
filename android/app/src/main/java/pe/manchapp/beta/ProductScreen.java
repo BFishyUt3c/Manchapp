@@ -13,10 +13,11 @@ final class ProductScreen {
         NativeUi ui = shell.ui();
         LinearLayout content = shell.content();
 
-        shell.title("Lo que preparas", "Productos y cupos para tu venta programada.");
-        shell.add(content, ui.button("Agregar producto", true, "plus", () -> startEditor(shell, null)), 20);
-        shell.add(content, ui.button("Compartir catálogo por WhatsApp", false, "share",
-                () -> FlyerStudioScreen.shareCatalogWhatsApp(shell)), 10);
+        shell.title("Lo que preparas", "Productos, combos y cupos para tu venta programada.");
+        shell.add(content, ui.button("Agregar producto", true, "plus", () -> startEditor(shell, null)), 18);
+        shell.pair(content,
+                "Crear un combo", () -> ComboEditorScreen.selectProduct(shell, true),
+                "Compartir catálogo", () -> FlyerStudioScreen.shareCatalogWhatsApp(shell));
 
         if (hasDraft(shell)) {
             shell.menu("Continuar con mi borrador",

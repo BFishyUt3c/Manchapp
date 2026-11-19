@@ -490,18 +490,19 @@ final class AppShell {
 
             // --- Bloqueo por configuración incompleta ---
             JSONObject s = renderState.optJSONObject("settings");
-            boolean profileComplete = s != null && !s.optString("name").isEmpty()
-                    && !s.optString("pickup").isEmpty();
+            boolean profileComplete = s != null
+                    && !s.optString("name").isEmpty()
+                    && !s.optString("pickup").isEmpty()
+                    && !s.optString("phone").isEmpty();
             boolean paymentComplete = s != null
                     && (!s.optString("paymentImage").isEmpty() || s.optBoolean("cashOnly", false)
                     || SaleRules.validPhone(s.optString("walletPhone")));
+            boolean onboarding = !profileComplete || !paymentComplete;
 
-            if (isRoot() || screen.equals("summary")) {
-                if (!profileComplete && !screen.equals("profile")) {
-                    screen = "profile";
-                } else if (profileComplete && !paymentComplete && !screen.equals("payments") && !screen.equals("qr")) {
-                    screen = "payments";
-                }
+            if (!profileComplete && !screen.equals("profile")) {
+                screen = "profile";
+            } else if (profileComplete && !paymentComplete && !screen.equals("payments") && !screen.equals("qr")) {
+                screen = "payments";
             }
             // ----------------------------------------------
 
@@ -510,8 +511,8 @@ final class AppShell {
             activity.setContentView(root);
             root.addView(ui.toolbar(isRoot() ? "ManchApp" : screenTitle(),
                     isRoot() ? "EMPRENDEDORA · " + data().optJSONObject("settings").optString("name") : "",
-                    isRoot() ? null : () -> activity.onBackPressed(),
-                    isRoot() ? () -> go("settings", "") : null));
+                    (isRoot() || (onboarding && !screen.equals("qr"))) ? null : () -> activity.onBackPressed(),
+                    (isRoot() && !onboarding) ? () -> go("settings", "") : null));
             JSONArray pendingArr = renderState.optJSONArray("pending");
             int pendingCount = pendingArr == null ? 0 : pendingArr.length();
             boolean offline = isOffline();
@@ -532,7 +533,13 @@ final class AppShell {
             root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
             if (prevScrollY > 0) {
                 final ScrollView activeScroll = scroll;
-                activeScroll.post(() -> activeScroll.scrollTo(0, prevScrollY));
+                activeScroll.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+                    @Override public boolean onPreDraw() {
+                        activeScroll.getViewTreeObserver().removeOnPreDrawListener(this);
+                        activeScroll.scrollTo(0, prevScrollY);
+                        return true;
+                    }
+                });
             }
             lastRenderedScreen = screen;
             footer = column();
@@ -565,9 +572,11 @@ final class AppShell {
                     HomeScreen.showHome(this);
                     break;
             }
-            root.addView(ui.navigation(new String[]{"home", "publications", "products", "orders"},
-                    new String[]{"Inicio", "Imágenes", "Productos", "Gestionar Ventas"},
-                    new String[]{"home", "photo", "food", "orders"}, destination(), this::changeTab));
+            if (!onboarding) {
+                root.addView(ui.navigation(new String[]{"home", "publications", "products", "orders"},
+                        new String[]{"Inicio", "Imágenes", "Productos", "Gestionar Ventas"},
+                        new String[]{"home", "photo", "food", "orders"}, destination(), this::changeTab));
+            }
         } finally {
             renderState = null;
         }
@@ -579,8 +588,8 @@ final class AppShell {
             case "schedule":
             case "orderSchedule": return "Fecha de venta";
             case "home": return "Inicio";
-            case "settings": return "Manka Kusi";
-            case "profile": return "Datos de Manka Kusi";
+            case "settings": return "Mi olla";
+            case "profile": return "Datos de tu olla";
             case "delivery": return "Reparto cercano";
             case "payments": return "Pagos y QR";
             case "qr": return "Revisar mi QR";

@@ -6,6 +6,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import org.json.*;
 import java.util.*;
 
@@ -16,28 +17,7 @@ final class ComboEditorScreen {
             FlyerStudioScreen.chooseFlyerProducts(shell);
             return;
         }
-        JSONArray products = shell.data().optJSONArray("products");
-        List<String> names = new ArrayList<>(), ids = new ArrayList<>();
-        for (int i = 0; products != null && i < products.length(); i++) {
-            JSONObject p = products.optJSONObject(i);
-            if (p.optString("line").equals("commercial")) {
-                names.add(p.optString("name"));
-                ids.add(p.optString("id"));
-            }
-        }
-        if (names.isEmpty()) {
-            shell.toast("Primero agrega un producto para vender.");
-            return;
-        }
-        new AlertDialog.Builder(shell.activity())
-                .setTitle("Elige un producto")
-                .setItems(names.toArray(new String[0]), (d, index) -> {
-                    JSONObject p = shell.find("products", ids.get(index));
-                    shell.publicationMessage(p.optString("description"));
-                    shell.go("promo", ids.get(index));
-                })
-                .setNegativeButton("Volver", null)
-                .show();
+        shell.go("promo", "");
     }
 
     static void chooseComboProducts(AppShell shell) {
@@ -51,7 +31,7 @@ final class ComboEditorScreen {
             }
         }
         if (ids.isEmpty()) {
-            shell.toast("Primero agrega productos individuales.");
+            shell.toast("Primero agrega productos individuales o usa '+ Producto rápido'.");
             return;
         }
         boolean[] checked = new boolean[ids.size()];
@@ -59,7 +39,7 @@ final class ComboEditorScreen {
             if (shell.comboIds.contains(ids.get(i))) checked[i] = true;
         }
         new AlertDialog.Builder(shell.activity())
-                .setTitle("Seleccionar productos para el combo")
+                .setTitle("Elige los productos del combo")
                 .setMultiChoiceItems(names.toArray(new String[0]), checked, (d, index, on) -> {
                     if (on) {
                         if (!shell.comboIds.contains(ids.get(index))) shell.comboIds.add(ids.get(index));
@@ -73,10 +53,6 @@ final class ComboEditorScreen {
     }
 
     static void showPromo(AppShell shell) {
-        if (shell.currentId().isEmpty() && shell.comboIds.isEmpty()) {
-            shell.go("products", "");
-            return;
-        }
         if (shell.comboIds.isEmpty() && !shell.currentId().isEmpty()) {
             shell.comboIds.add(shell.currentId());
         }
@@ -87,17 +63,19 @@ final class ComboEditorScreen {
             AppShell.put(combo, "description", "");
             AppShell.put(combo, "price", "");
             AppShell.put(combo, "stock", "");
+            AppShell.put(combo, "preset", 0);
             shell.setComboDraft(combo);
         }
+        final JSONObject draft = combo;
         shell.title("Crear un combo", "Combina varios productos con un precio especial.");
         LinearLayout content = shell.content();
 
-        shell.segmented(new String[]{"Merienda", "Familiar", "Antojo"}, 0, index -> {
-            String name = new String[]{"Combo merienda", "Combo familiar", "Antojo de la tarde"}[index];
-            EditText nameField = shell.fields().get("name");
-            if (nameField != null) nameField.setText(name);
-            EditText descField = shell.fields().get("description");
-            if (descField != null && descField.getText().toString().isEmpty()) descField.setText(name);
+        String[] presets = {"Combo merienda", "Combo familiar", "Antojo de la tarde"};
+        int selectedPreset = draft.optInt("preset", 0);
+        shell.segmented(new String[]{"Merienda", "Familiar", "Antojo"}, selectedPreset, index -> {
+            AppShell.put(draft, "preset", index);
+            AppShell.put(draft, "name", presets[index]);
+            shell.render();
         });
 
         shell.pair(content, "Elegir productos (" + shell.comboIds.size() + ")", () -> chooseComboProducts(shell),
@@ -115,12 +93,14 @@ final class ComboEditorScreen {
         }
         if (summary.length() > 0) {
             shell.add(content, shell.ui().message("Incluye:", summary.toString(), NativeUi.GOLD), 12);
+        } else {
+            shell.add(content, shell.ui().message("Sin productos aún", "Toca 'Elegir productos' para armar este combo.", NativeUi.SOFT), 12);
         }
 
-        bind(shell, combo, "name", shell.field("name", "Nombre del combo", combo.optString("name"), "Ej: Combo familiar", false));
-        bind(shell, combo, "description", shell.field("description", "Detalle del contenido", combo.optString("description"), "Ej: 3 cachangas + 2 cafés", false));
-        bind(shell, combo, "price", shell.field("price", "Precio del combo (S/)", combo.optString("price"), "Ej: 15.00", true));
-        bind(shell, combo, "stock", shell.field("stock", "¿Cuántos combos ofrecerás?", combo.optString("stock"), "Ej: 10", true));
+        bind(draft, "name", shell.field("name", "Nombre del combo", draft.optString("name"), "Ej: Combo familiar", false));
+        bind(draft, "description", shell.field("description", "Detalle del contenido", draft.optString("description"), "Ej: 3 cachangas + 2 cafés", false));
+        bind(draft, "price", shell.field("price", "Precio del combo (S/)", draft.optString("price"), "Ej: 15.00", true));
+        bind(draft, "stock", shell.field("stock", "¿Cuántos combos ofrecerás?", draft.optString("stock"), "Ej: 10", true));
 
         final JSONObject finalSchedule = baseSchedule;
         shell.primary("Guardar combo", () -> {
@@ -148,15 +128,16 @@ final class ComboEditorScreen {
                     return;
                 }
                 String id = UUID.randomUUID().toString();
+                String desc = shell.value("description").isEmpty() ? summary.toString() : shell.value("description");
                 JSONObject product = new JSONObject()
                         .put("id", id)
                         .put("name", shell.value("name"))
-                        .put("description", shell.value("description"))
+                        .put("description", desc)
                         .put("price", price)
                         .put("stock", stock)
                         .put("category", "Combos")
                         .put("saleUnit", "combo")
-                        .put("portion", shell.value("description"))
+                        .put("portion", desc)
                         .put("line", "commercial")
                         .put("available", true)
                         .put("image", "")
@@ -180,7 +161,7 @@ final class ComboEditorScreen {
         });
     }
 
-    private static void bind(AppShell shell, JSONObject combo, String key, EditText field) {
+    private static void bind(JSONObject combo, String key, EditText field) {
         field.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
             public void onTextChanged(CharSequence value, int start, int before, int count) {}
@@ -188,35 +169,50 @@ final class ComboEditorScreen {
         });
     }
 
+    private static EditText dialogField(AppShell shell, LinearLayout parent, String label, String hint, int inputType) {
+        shell.add(parent, shell.text(label, 14, NativeUi.INK, true), 12);
+        EditText e = new EditText(shell.activity());
+        e.setTextSize(17);
+        e.setTypeface(shell.regular());
+        e.setTextColor(NativeUi.INK);
+        e.setHintTextColor(NativeUi.MUTED);
+        e.setHint(hint);
+        e.setPadding(shell.dp(13), shell.dp(12), shell.dp(13), shell.dp(12));
+        e.setBackground(shell.bg(NativeUi.CARD, NativeUi.LINE, 12));
+        e.setMinHeight(shell.dp(50));
+        e.setInputType(inputType);
+        shell.add(parent, e, 6);
+        return e;
+    }
+
     private static void createInlineProduct(AppShell shell) {
         MainActivity activity = shell.activity();
+        ScrollView wrapper = new ScrollView(activity);
+        wrapper.setBackgroundColor(NativeUi.BG);
         LinearLayout form = shell.column();
-        form.setPadding(shell.dp(20), shell.dp(8), shell.dp(20), 0);
-        EditText name = new EditText(activity), price = new EditText(activity), stock = new EditText(activity);
-        name.setHint("Nombre del producto (ej. Refresco)");
-        price.setHint("Precio unitario S/ (ej. 3.00)");
-        price.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        stock.setHint("Cupos disponibles (ej. 20)");
-        stock.setInputType(InputType.TYPE_CLASS_NUMBER);
-        for (EditText e : new EditText[]{name, price, stock}) {
-            e.setTextSize(16);
-            e.setTypeface(shell.regular());
-            e.setMinHeight(shell.dp(50));
-            form.addView(e);
-        }
+        form.setPadding(shell.dp(20), shell.dp(14), shell.dp(20), shell.dp(16));
+        wrapper.addView(form);
+
+        EditText name = dialogField(shell, form, "Nombre del producto", "Ej. Refresco de maracuyá",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        EditText price = dialogField(shell, form, "Precio unitario (S/)", "Ej. 3.00",
+                InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        EditText stock = dialogField(shell, form, "Cupos disponibles", "Ej. 20",
+                InputType.TYPE_CLASS_NUMBER);
+
         AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle("Crear producto rápido")
-                .setView(form)
-                .setNegativeButton("Volver", null)
+                .setView(wrapper)
+                .setNegativeButton("Cancelar", null)
                 .setPositiveButton("Crear y añadir", null)
                 .create();
         dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(btn -> {
             try {
                 String n = name.getText().toString().trim();
-                double p = Double.parseDouble(price.getText().toString().replace(',', '.'));
+                double p = Double.parseDouble(price.getText().toString().trim().replace(',', '.'));
                 int s = Integer.parseInt(stock.getText().toString().trim());
                 if (n.length() < 2) { name.setError("Escribe el nombre."); return; }
-                if (!Double.isFinite(p) || p <= 0 || p > 10000) { price.setError("Precio válido > 0."); return; }
+                if (!Double.isFinite(p) || p <= 0 || p > 10000) { price.setError("Precio válido mayor a 0."); return; }
                 if (s < 0 || s > 10000) { stock.setError("Cupos enteros."); return; }
                 String id = UUID.randomUUID().toString();
                 JSONObject product = new JSONObject()
