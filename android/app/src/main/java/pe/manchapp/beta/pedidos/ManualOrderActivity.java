@@ -31,23 +31,70 @@ public final class ManualOrderActivity extends Activity {
     private void draw(){
         int oldY=scroll!=null&&displayedStep==step?scroll.getScrollY():0;displayedStep=step;fields.clear();LinearLayout root=ui.column();root.setBackgroundColor(NativeUi.BG);setContentView(root);root.addView(ui.toolbar("Registrar pedido",step==0?"1. Productos":"2. Cliente y entrega",()->onBackPressed(),null));
         scroll=new ScrollView(this);body=ui.column();body.setPadding(ui.dp(16),ui.dp(16),ui.dp(16),ui.dp(20));scroll.addView(body);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));scroll.post(()->scroll.scrollTo(0,oldY));
-        add(body,ui.message("DÍA DE VENTA",SaleSchedule.day(chosenSchedule()),NativeUi.GOLD),0);
-        if(step==0)products();else contact();
+        LinearLayout saleDay = ui.message("DÍA DE VENTA", SaleSchedule.day(chosenSchedule()), NativeUi.GOLD);
+        add(body, saleDay, 0);
+        if(step==0)products((TextView) saleDay.getChildAt(1));else contact();
         footer=ui.column();footer.setPadding(ui.dp(16),ui.dp(8),ui.dp(16),ui.dp(12));footer.addView(ui.button(step==0?"Continuar con el cliente":"Revisar pedido",true,null,()->{
             capture();if(step==0){int count=0;Iterator<String> ids=quantities.keys();while(ids.hasNext())count+=quantities.optInt(ids.next());if(count==0){toast("Elige al menos un producto.");return;}step=1;draw();}
             else review();
         }));root.addView(footer);
     }
-    private void products(){
+    private void products(TextView saleDay){
         add(body,ui.heading("¿Qué pidió el cliente?",24),16);add(body,ui.text("Registra pedidos recibidos por WhatsApp, llamada o en persona.",15,NativeUi.MUTED,false),8);
-        JSONArray products=store.snapshot().optJSONArray("products");double subtotal=0;
+        JSONArray products=store.snapshot().optJSONArray("products");
+        LinearLayout summary = ui.message("Productos: " + cash(0),
+                "Elige productos de una misma fecha. Para otra jornada, registra un pedido separado.", NativeUi.SOFT);
+        TextView subtotal = (TextView) summary.getChildAt(0);
         for(int i=0;products!=null&&i<products.length();i++){
-            JSONObject product=products.optJSONObject(i);if(!product.optString("line").equals("commercial")||!product.optBoolean("available"))continue;String id=product.optString("id");int count=quantities.optInt(id);subtotal+=count*product.optDouble("price");
+            JSONObject product=products.optJSONObject(i);if(!product.optString("line").equals("commercial")||!product.optBoolean("available"))continue;String id=product.optString("id");int count=quantities.optInt(id);
             LinearLayout card=ui.card();add(card,ui.text(product.optString("name"),19,NativeUi.INK,true),0);add(card,ui.text(cash(product.optDouble("price"))+" · "+product.optInt("stock")+" cupos",14,NativeUi.MUTED,false),5);add(card,ui.text("Venta: "+SaleSchedule.day(SaleSchedule.forProduct(product,settings())),13,NativeUi.WINE,true),5);
-            LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.addView(ui.button("−",false,null,()->{put(quantities,id,Math.max(0,count-1));draw();}),new LinearLayout.LayoutParams(ui.dp(58),ui.dp(52)));
-            TextView number=ui.text(String.valueOf(count),22,NativeUi.WINE,true);number.setGravity(Gravity.CENTER);row.addView(number,new LinearLayout.LayoutParams(0,-2,1));TextView plus=ui.button("+",false,null,()->{put(quantities,id,count+1);draw();});plus.setEnabled(count<Math.min(99,product.optInt("stock")));row.addView(plus,new LinearLayout.LayoutParams(ui.dp(58),ui.dp(52)));add(card,row,10);add(body,card,12);
+            int limit = Math.min(99, product.optInt("stock"));
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView number = ui.text(String.valueOf(count), 22, NativeUi.WINE, true);
+            number.setGravity(Gravity.CENTER);
+            TextView minus = ui.button("−", false, null, null);
+            TextView plus = ui.button("+", false, null, null);
+            Runnable refreshQuantity = () -> {
+                int current = quantities.optInt(id);
+                number.setText(String.valueOf(current));
+                minus.setEnabled(current > 0);
+                plus.setEnabled(current < limit);
+                updateSubtotal(products, subtotal);
+                saleDay.setText(SaleSchedule.day(chosenSchedule()));
+            };
+            minus.setEnabled(count > 0);
+            plus.setEnabled(count < limit);
+            minus.setOnClickListener(v -> {
+                int current = quantities.optInt(id);
+                if (current == 0) return;
+                put(quantities, id, current - 1);
+                refreshQuantity.run();
+            });
+            plus.setOnClickListener(v -> {
+                int current = quantities.optInt(id);
+                if (current >= limit) return;
+                put(quantities, id, current + 1);
+                refreshQuantity.run();
+            });
+            row.addView(minus, new LinearLayout.LayoutParams(ui.dp(58), ui.dp(52)));
+            row.addView(number, new LinearLayout.LayoutParams(0, -2, 1));
+            row.addView(plus, new LinearLayout.LayoutParams(ui.dp(58), ui.dp(52)));
+            add(card, row, 10);
+            add(body, card, 12);
         }
-        add(body,ui.message("Productos: "+cash(subtotal),"Elige productos de una misma fecha. Para otra jornada, registra un pedido separado.",NativeUi.SOFT),14);
+        updateSubtotal(products, subtotal);
+        add(body, summary, 14);
+    }
+    private void updateSubtotal(JSONArray products, TextView subtotal) {
+        double total = 0;
+        for (int i = 0; products != null && i < products.length(); i++) {
+            JSONObject product = products.optJSONObject(i);
+            if (product.optString("line").equals("commercial") && product.optBoolean("available")) {
+                total += quantities.optInt(product.optString("id")) * product.optDouble("price");
+            }
+        }
+        subtotal.setText("Productos: " + cash(total));
     }
     private EditText field(String key,String label,String hint,boolean phone){
         add(body,ui.text(label,15,NativeUi.INK,true),16);EditText input=new EditText(this);input.setText(details.optString(key));input.setHint(hint);input.setTextSize(17);input.setTypeface(ui.regular);input.setTextColor(NativeUi.INK);input.setPadding(ui.dp(12),ui.dp(14),ui.dp(12),ui.dp(14));input.setBackground(ui.background(NativeUi.CARD,NativeUi.LINE,12));input.setInputType(phone?InputType.TYPE_CLASS_PHONE:InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);

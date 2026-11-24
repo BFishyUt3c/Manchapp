@@ -96,4 +96,71 @@ public class OwnerFlowTest {
             for(int style=0;style<3;style++)for(boolean square:new boolean[]{false,true}){Bitmap bitmap=FlyerRenderer.render(product,data.getJSONObject("settings"),"Reserva para nuestra próxima venta",style,square,ui);assertEquals(720,bitmap.getWidth());assertEquals(square?720:1280,bitmap.getHeight());try(OutputStream out=Files.newOutputStream(dir.resolve("flyer-"+style+(square?"-square":"-vertical")+".png"))){assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,out));}bitmap.recycle();}
         }
     }
+
+    @Test public void manualOrderQuantityButtonsKeepTheProductListInPlace() throws Exception {
+        try (ActivityController<ManualOrderActivity> controller =
+                     Robolectric.buildActivity(ManualOrderActivity.class).setup().visible()) {
+            ManualOrderActivity activity = controller.get();
+            android.widget.ScrollView scroll = (android.widget.ScrollView) field(activity, "scroll");
+            View root = activity.findViewById(android.R.id.content);
+            root.measure(View.MeasureSpec.makeMeasureSpec(720, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY));
+            root.layout(0, 0, 720, 800);
+            ShadowLooper.idleMainLooper();
+            scroll.scrollTo(0, scroll.getChildAt(0).getHeight());
+            int position = scroll.getScrollY();
+            assertTrue(position > 0);
+            java.util.ArrayList<View> buttons = new java.util.ArrayList<>();
+            scroll.findViewsWithText(buttons, "+", View.FIND_VIEWS_WITH_TEXT);
+            View plus = buttons.get(buttons.size() - 1);
+            ViewGroup row = (ViewGroup) plus.getParent();
+            android.widget.TextView count = (android.widget.TextView) row.getChildAt(1);
+            assertTrue(plus.performClick());
+            assertEquals("1", count.getText().toString());
+            assertTrue(row.getChildAt(0).performClick());
+            assertEquals("0", count.getText().toString());
+            ShadowLooper.idleMainLooper();
+            assertSame(scroll, field(activity, "scroll"));
+            assertEquals(position, scroll.getScrollY());
+        }
+    }
+
+    @Test public void orderAndPaymentFiltersAreIndependent() throws Exception {
+        JSONObject order = new JSONObject().put("status", "registered").put("paid", false);
+        assertTrue(OrderScreen.matchesFilters(order, "registered", "all"));
+        assertTrue(OrderScreen.matchesFilters(order, "active", "unpaid"));
+        assertFalse(OrderScreen.matchesFilters(order, "registered", "paid"));
+        order.put("paid", true);
+        assertTrue(OrderScreen.matchesFilters(order, "registered", "paid"));
+        order.put("status", "delivered").put("paid", false);
+        assertTrue(OrderScreen.matchesFilters(order, "finished", "unpaid"));
+        assertFalse(OrderScreen.matchesFilters(order, "active", "unpaid"));
+        order.put("status", "cancelled");
+        assertTrue(OrderScreen.matchesFilters(order, "finished", "all"));
+        assertFalse(OrderScreen.matchesFilters(order, "all", "unpaid"));
+    }
+
+    @Test public void savingManualOrderReturnsToSalesAndMakesTheNewOrderVisible() throws Exception {
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup().visible()) {
+            MainActivity activity = controller.get();
+            AppShell shell = (AppShell) field(activity, "shell");
+            JSONObject order = shell.store().manualOrder(details(), new JSONObject().put("causa", 1));
+            shell.orderDate("2000-01-01");
+            shell.orderFilter("finished");
+            shell.orderPayment("paid");
+            shell.orderDelivery("delivery");
+            activity.onActivityResult(85, android.app.Activity.RESULT_OK,
+                    new android.content.Intent().putExtra("orderId", order.getString("id")));
+            assertEquals("orders", shell.screen());
+            assertEquals(order.getString("saleDate"), shell.orderDate());
+            assertTrue(OrderScreen.visibleOrder(shell, order));
+            assertTrue(OrderScreen.matchesFilters(order, shell.orderFilter(), shell.orderPayment()));
+
+            shell.go("order", order.getString("id"));
+            View firstCard = shell.content().getChildAt(2);
+            java.util.ArrayList<View> confirm = new java.util.ArrayList<>();
+            firstCard.findViewsWithText(confirm, "Confirmar pedido", View.FIND_VIEWS_WITH_TEXT);
+            assertEquals(1, confirm.size());
+        }
+    }
 }

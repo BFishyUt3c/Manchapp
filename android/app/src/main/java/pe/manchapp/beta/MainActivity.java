@@ -158,9 +158,17 @@ public class MainActivity extends Activity {
             return;
         }
         if (request == 85) {
-            if (result == RESULT_OK && intent != null) {
+            if (result == RESULT_OK) {
                 shell.setStore(LocalStore.open(this));
-                shell.go("order", intent.getStringExtra("orderId"));
+                String id = intent == null ? null : intent.getStringExtra("orderId");
+                JSONObject saved = id == null ? null : shell.find("orders", id);
+                String saleDate = saved == null ? "" : saved.optString("saleDate");
+                shell.orderDate(saleDate.isEmpty() ? "*" : saleDate);
+                shell.orderDelivery("all");
+                shell.orderFilter("active");
+                shell.orderPayment("all");
+                shell.go("orders", "");
+                shell.toast("Pedido registrado.");
             }
             return;
         }

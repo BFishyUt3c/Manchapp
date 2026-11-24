@@ -35,6 +35,7 @@ final class AppShell {
     private String orderDate = "";
     private String summaryDate = "";
     private String orderFilter = "active";
+    private String orderPayment = "all";
     private String pickedImage = "";
     private String photoFor = "product";
     private String pendingQr = "";
@@ -82,6 +83,8 @@ final class AppShell {
     void summaryDate(String v) { summaryDate = v; }
     String orderFilter() { return orderFilter; }
     void orderFilter(String v) { orderFilter = v; }
+    String orderPayment() { return orderPayment; }
+    void orderPayment(String v) { orderPayment = v; }
     String pickedImage() { return pickedImage; }
     void pickedImage(String v) { pickedImage = v; }
     String photoFor() { return photoFor; }

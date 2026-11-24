@@ -11,6 +11,34 @@ import org.json.*;
 import java.util.*;
 
 final class OrderScreen {
+    private static final int CONFIRM_INK = 0xff794900, CONFIRM_BG = 0xffffe3a3;
+    private static final int PAYMENT_INK = 0xff254d83, PAYMENT_BG = 0xffe1edff;
+    private static final int PAID_BG = 0xffe6f4ea;
+
+    private static int statusColor(String state) {
+        if (state.equals("registered")) return CONFIRM_INK;
+        if (state.equals("delivered")) return NativeUi.GREEN;
+        if (state.equals("cancelled")) return NativeUi.MUTED;
+        return NativeUi.WINE;
+    }
+
+    private static int statusBackground(String state) {
+        if (state.equals("registered")) return CONFIRM_BG;
+        if (state.equals("delivered")) return PAID_BG;
+        if (state.equals("cancelled")) return NativeUi.LINE;
+        return NativeUi.SOFT;
+    }
+
+    static boolean matchesFilters(JSONObject order, String statusFilter, String paymentFilter) {
+        String state = order.optString("status");
+        boolean cancelled = state.equals("cancelled");
+        boolean finished = cancelled || state.equals("delivered");
+        if ((statusFilter.equals("active") && finished) || (statusFilter.equals("finished") && !finished)
+                || (statusFilter.equals("registered") && !state.equals("registered"))) return false;
+        if (paymentFilter.equals("paid")) return order.optBoolean("paid");
+        if (paymentFilter.equals("unpaid")) return !cancelled && !order.optBoolean("paid");
+        return true;
+    }
 
     static JSONObject orderChange(JSONObject o) {
         JSONObject value = new JSONObject();
@@ -33,29 +61,39 @@ final class OrderScreen {
         MainActivity activity = shell.activity();
         NativeUi ui = shell.ui();
         LinearLayout content = shell.content();
-        shell.title("Ventas", "Pedidos, cupos y entregas en un solo lugar.");
-        JSONArray products = shell.data().optJSONArray("products");
+        shell.title("Ventas", "Gestiona pedidos, cobros y entregas.");
         JSONArray orders = shell.data().optJSONArray("orders");
-        int units = 0, attention = 0;
-        for (int i = 0; products != null && i < products.length(); i++) {
-            JSONObject product = products.optJSONObject(i);
-            if (product.optString("line").equals("commercial") && product.optBoolean("available")) {
-                units += product.optInt("stock");
-            }
+        if (shell.orderDate().isEmpty()) {
+            String date = shell.data().optJSONObject("settings").optString("saleDate");
+            shell.orderDate(date.isEmpty() ? "*" : date);
         }
+        int unconfirmed = 0, unpaid = 0;
         for (int i = 0; orders != null && i < orders.length(); i++) {
-            if (!Arrays.asList("delivered", "cancelled").contains(orders.optJSONObject(i).optString("status"))) {
-                attention++;
-            }
+            JSONObject order = orders.optJSONObject(i);
+            if (order == null || !visibleOrder(shell, order)) continue;
+            if (matchesFilters(order, "registered", "all")) unconfirmed++;
+            if (matchesFilters(order, "all", "unpaid")) unpaid++;
         }
 
         LinearLayout stats = new LinearLayout(activity);
         stats.setPadding(0, shell.dp(6), 0, shell.dp(6));
-        LinearLayout stock = ui.message(String.valueOf(units), "Cupos disponibles", NativeUi.CARD);
-        LinearLayout pendingBox = ui.message(String.valueOf(attention), "Por atender", NativeUi.GOLD);
+        LinearLayout confirmBox = ui.message(String.valueOf(unconfirmed), "Por confirmar", CONFIRM_BG);
+        LinearLayout pendingBox = ui.message(String.valueOf(unpaid), "Pago pendiente", PAYMENT_BG);
+        ui.buttonRole(confirmBox);
+        confirmBox.setOnClickListener(view -> {
+            shell.orderFilter("registered");
+            shell.orderPayment("all");
+            shell.render();
+        });
+        ui.buttonRole(pendingBox);
+        pendingBox.setOnClickListener(view -> {
+            shell.orderFilter("all");
+            shell.orderPayment("unpaid");
+            shell.render();
+        });
         LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -1, 1);
         left.rightMargin = shell.dp(10);
-        stats.addView(stock, left);
+        stats.addView(confirmBox, left);
         stats.addView(pendingBox, new LinearLayout.LayoutParams(0, -1, 1));
         shell.add(content, stats, 14);
 
@@ -72,17 +110,10 @@ final class OrderScreen {
         shell.add(content, shell.button("Organizar reparto", false, () -> shell.go("dispatch", "")), 12);
 
         showOrderFilters(shell);
-        shell.segmented(new String[]{"Por atender", "Terminados"}, shell.orderFilter().equals("active") ? 0 : 1, i -> {
-            shell.orderFilter(i == 0 ? "active" : "finished");
-            shell.render();
-        });
-
         int count = 0;
-        for (int i = 0; orders != null && i < orders.length(); i++) {
+        for (int i = orders == null ? -1 : orders.length() - 1; i >= 0; i--) {
             JSONObject o = orders.optJSONObject(i);
-            if (!visibleOrder(shell, o)) continue;
-            boolean ended = o.optString("status").equals("delivered") || o.optString("status").equals("cancelled");
-            if (ended != shell.orderFilter().equals("finished")) continue;
+            if (o == null || !visibleOrder(shell, o) || !matchesFilters(o, shell.orderFilter(), shell.orderPayment())) continue;
             count++;
 
             LinearLayout c = shell.card();
@@ -96,19 +127,20 @@ final class OrderScreen {
             c.addView(header);
 
             LinearLayout badges = new LinearLayout(activity);
-            TextView statusChip = ui.chip(shell.status(o.optString("status")), NativeUi.WINE, NativeUi.GOLD);
+            String status = o.optString("status");
+            TextView statusChip = ui.chip(shell.status(status), statusColor(status), statusBackground(status));
             statusChip.setTextSize(11);
             LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, -2);
             chipLp.rightMargin = shell.dp(8);
             badges.addView(statusChip, chipLp);
 
             boolean paid = o.optBoolean("paid");
-            TextView paidChip = ui.chip(
-                    paid ? "Pagado" : "Pago pendiente",
-                    paid ? NativeUi.GREEN : 0xff8a6425,
-                    paid ? 0xffe6f4ea : NativeUi.SOFT);
-            paidChip.setTextSize(11);
-            badges.addView(paidChip);
+            if (paid || !status.equals("cancelled")) {
+                TextView paidChip = ui.chip(paid ? "Pagado" : "Pago pendiente",
+                        paid ? NativeUi.GREEN : PAYMENT_INK, paid ? PAID_BG : PAYMENT_BG);
+                paidChip.setTextSize(11);
+                badges.addView(paidChip);
+            }
             shell.add(c, badges, 8);
 
             shell.add(c, shell.text("Venta: " + SaleSchedule.day(o), 14, NativeUi.INK, true), 8);
@@ -123,8 +155,8 @@ final class OrderScreen {
         }
         if (count == 0) {
             LinearLayout c = shell.card();
-            shell.add(c, shell.text("Todavía no hay pedidos aquí", 18, NativeUi.INK, true), 0);
-            shell.add(c, shell.text("Cuando recibas o registres un pedido, aquí verás su fecha de venta y podrás gestionar el recojo o reparto.", 14, NativeUi.MUTED, false), 8);
+            shell.add(c, shell.text("No hay pedidos con estos filtros", 18, NativeUi.INK, true), 0);
+            shell.add(c, shell.text("Cambia los filtros o registra un pedido nuevo.", 14, NativeUi.MUTED, false), 8);
             shell.add(content, c, 18);
         }
     }
@@ -140,136 +172,23 @@ final class OrderScreen {
         }
         shell.title("Pedido " + String.format(Locale.US, "%03d", order.optInt("number")),
                 order.optString("customer") + " · " + order.optString("phone"));
-        LinearLayout food = shell.card();
-        shell.add(food, shell.text("ESTADO DEL PEDIDO", 12, NativeUi.WINE, true), 0);
-        shell.add(food, ui.heading(shell.status(order.optString("status")), 24), 6);
-        JSONArray items = order.optJSONArray("items");
-        for (int i = 0; items != null && i < items.length(); i++) {
-            JSONObject item = items.optJSONObject(i);
-            shell.add(food, shell.text(item.optInt("quantity") + " × " + item.optString("name") + " · "
-                    + shell.cash(item.optDouble("price") * item.optInt("quantity")), 16, NativeUi.INK, false), 10);
-        }
-        shell.add(food, shell.text("Entrega: " + (order.optString("fulfillment").equals("delivery")
-                ? (order.optBoolean("deliveryOffer") ? "Gratis por promoción" : shell.cash(order.optDouble("fee")))
-                : "Recojo sin costo"), 14, NativeUi.MUTED, false), 12);
-        shell.add(food, shell.text("Total " + shell.cash(order.optDouble("total")), 24, NativeUi.WINE, true), 10);
-        shell.add(content, food, 16);
-
-        shell.add(content, ui.message("DÍA DE VENTA", SaleSchedule.day(order), NativeUi.GOLD), 14);
-        if (order.optString("status").equals("registered")) {
-            shell.add(content, ui.message("FALTA CONFIRMAR",
-                    "Acepta el pedido para avisarle al cliente que la olla lo recibió. Después podrás marcar el día de venta.", NativeUi.SOFT), 12);
-        } else if (order.optString("status").equals("confirmed")) {
-            shell.add(content, ui.message("PEDIDO ACEPTADO",
-                    "El cliente ya puede ver la confirmación. El botón de día de venta habilita recojo o reparto el día acordado.", NativeUi.SOFT), 12);
-        }
-        if (!order.optString("fulfillment").equals("delivery")) {
-            shell.add(content, ui.message("PUEDES RECOGER", SaleSchedule.window(order), NativeUi.CARD), 12);
-        }
-        if (!Arrays.asList("delivering", "delivered", "cancelled", "pickup_available").contains(order.optString("status"))) {
-            shell.menu("Fecha y recojo de este pedido", "Revisar o agregar fechas acordadas con el cliente", "clock",
-                    () -> ScheduleScreen.openSchedule(shell, true));
-        }
-
-        LinearLayout payment = shell.card();
-        String method = order.optString("paymentMethodConfirmed", order.optString("payment"));
-        shell.add(payment, shell.text("PAGO · " + methodLabel(method), 12, NativeUi.WINE, true), 0);
-        shell.add(payment, shell.text(order.optBoolean("paid") ? "Pago confirmado" : "Pago pendiente", 21, order.optBoolean("paid") ? NativeUi.GREEN : NativeUi.WINE, true), 7);
-        if (order.optBoolean("paid") && order.optLong("paidAt", 0) > 0) {
-            shell.add(payment, shell.text("Confirmado: " + formatPaidAt(order.optLong("paidAt")), 13, NativeUi.INK, false), 4);
-        }
-        if (!order.optString("paymentNote").isEmpty()) {
-            shell.add(payment, shell.text("Nota: " + order.optString("paymentNote"), 13, NativeUi.MUTED, false), 3);
-        }
-        shell.add(payment, shell.text("El estado del pedido y el pago se confirman por separado.", 14, NativeUi.MUTED, false), 7);
-        boolean pending = shell.store().hasPending(shell.currentId());
         String state = order.optString("status");
-        if (!state.equals("cancelled")) {
-            shell.add(payment, shell.button(order.optBoolean("paid") ? "Corregir estado del pago" : "Confirmar dinero recibido", false,
-                    () -> {
-                        if (order.optBoolean("paid")) {
-                            new AlertDialog.Builder(activity)
-                                    .setTitle("¿Marcar pago pendiente?")
-                                    .setMessage("Se quitará la confirmación de cobro de este pedido.")
-                                    .setNegativeButton("Volver", null)
-                                    .setPositiveButton("Confirmar", (d, w) -> {
-                                        if (shell.checkPending(shell.currentId())) return;
-                                        JSONObject change = orderChange(order);
-                                        AppShell.put(change, "paid", false);
-                                        AppShell.put(change, "paidAt", 0L);
-                                        AppShell.put(change, "paymentMethodConfirmed", "");
-                                        AppShell.put(change, "paymentNote", "");
-                                        shell.enqueue("order", change, "order");
-                                    }).show();
-                        } else {
-                            confirmPaymentDialog(shell, order);
-                        }
-                    }), 12);
-        }
-        shell.add(content, payment, 12);
-
-        if (SaleRules.validPhone(order.optString("phone"))) {
-            shell.add(content, ui.button("Llamar al cliente", false, null, () -> {
-                try {
-                    activity.startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + order.optString("phone"))));
-                } catch (Exception error) {
-                    shell.toast("No hay una aplicación de llamadas disponible.");
-                }
-            }), 12);
-        }
-
         boolean delivery = order.optString("fulfillment").equals("delivery");
-        String place = delivery
-                ? DeliveryDestination.typeLabel(order.optString("destinationType", "home")) + " · " + order.optString("zone")
-                        + "\n" + order.optString("address") + "\nReferencia: " + order.optString("reference")
-                : order.optString("pickup", shell.data().optJSONObject("settings").optString("pickup"));
-        LinearLayout arrival = ui.message(delivery ? "REPARTO A COORDINAR" : "RECOJO EN LA OLLA", place, NativeUi.CARD);
-        if (!order.optString("driver").isEmpty()) {
-            shell.add(arrival, shell.text("Reparte: " + order.optString("driver"), 16, NativeUi.GREEN, true), 10);
+        LinearLayout statusCard = shell.card();
+        shell.add(statusCard, ui.chip(shell.status(state), statusColor(state), statusBackground(state)), 0);
+        shell.add(statusCard, shell.text("Venta: " + SaleSchedule.day(order), 15, NativeUi.INK, true), 8);
+        if (state.equals("registered")) {
+            shell.add(statusCard, shell.text("Confirma el pedido para avisar al cliente que lo aceptaste.",
+                    14, NativeUi.MUTED, false), 6);
         }
-        if (!order.optString("deliveryWindow").isEmpty()) {
-            shell.add(arrival, shell.text("Horario acordado: " + order.optString("deliveryWindow"), 15, NativeUi.INK, true), 8);
-        }
-        if (delivery && !Arrays.asList("delivered", "cancelled").contains(state)) {
-            shell.add(arrival, shell.button("Organizar reparto", false, () -> editDispatch(shell, order)), 12);
-        }
-        shell.add(content, arrival, 12);
-
-        JSONObject deliveryPoint = order.optJSONObject("deliveryLocation");
-        if (delivery) {
-            boolean exact = DeliveryDestination.validPoint(deliveryPoint);
-            String addressQuery = DeliveryDestination.addressGeo(order);
-            if (exact || !order.optString("address").isEmpty()) {
-                LinearLayout point = ui.message(exact ? "UBICACIÓN DE ENTREGA" : "DIRECCIÓN DE ENTREGA",
-                        exact ? "Punto confirmado al reservar · precisión aproximada: " + Math.round(deliveryPoint.optDouble("accuracy")) + " m"
-                                : DeliveryDestination.typeLabel(order.optString("destinationType", "home")) + " · " + order.optString("zone")
-                                        + "\n" + order.optString("address") + "\nReferencia: " + order.optString("reference"),
-                        NativeUi.CARD);
-                shell.add(point, ui.button(exact ? "Abrir ubicación" : "Buscar dirección en Maps", false, "pin", () -> {
-                    try {
-                        String uri = exact ? DeliveryDestination.geo(deliveryPoint) : addressQuery;
-                        activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(uri)));
-                    } catch (Exception error) {
-                        shell.toast("No hay una aplicación de mapas disponible. La dirección escrita se conserva.");
-                    }
-                }), 10);
-                shell.add(content, point, 12);
-            }
-        }
-
-        if (pending) {
-            shell.add(content, ui.message("Cambios guardados",
-                    "La aplicación de clientes los verá al actualizar este pedido en el mismo celular.", NativeUi.GOLD), 12);
-        }
-
         String next = SaleSchedule.next(state, delivery);
-        String label = next.equals("confirmed") ? "Aceptar pedido"
+        String label = next.equals("confirmed") ? "Confirmar pedido"
                 : next.equals("sale_day") ? "Marcar día de venta"
                 : next.equals("delivering") ? "El delivery salió"
                 : next.equals("pickup_available") ? "Habilitar recojo" : "Marcar como entregado";
         if (!next.isEmpty()) {
             final String target = next;
-            shell.primary(label, () -> {
+            shell.add(statusCard, ui.button(label, true, null, () -> {
                 if (shell.checkPending(shell.currentId())) return;
                 try {
                     SaleSchedule.checkTransition(order, target, System.currentTimeMillis());
@@ -304,8 +223,121 @@ final class OrderScreen {
                     AppShell.put(change, "status", target);
                     shell.enqueue("order", change, "order");
                 }
-            });
+            }), 12);
         }
+        shell.add(content, statusCard, 12);
+
+        LinearLayout payment = shell.card();
+        String method = order.optString("paymentMethodConfirmed", order.optString("payment"));
+        shell.add(payment, shell.text("PAGO · " + methodLabel(method), 12, NativeUi.WINE, true), 0);
+        boolean paid = order.optBoolean("paid");
+        if (paid || !state.equals("cancelled")) {
+            shell.add(payment, ui.chip(paid ? "Pagado" : "Pago pendiente",
+                    paid ? NativeUi.GREEN : PAYMENT_INK, paid ? PAID_BG : PAYMENT_BG), 7);
+        }
+        if (order.optBoolean("paid") && order.optLong("paidAt", 0) > 0) {
+            shell.add(payment, shell.text("Confirmado: " + formatPaidAt(order.optLong("paidAt")), 13, NativeUi.INK, false), 4);
+        }
+        if (!order.optString("paymentNote").isEmpty()) {
+            shell.add(payment, shell.text("Nota: " + order.optString("paymentNote"), 13, NativeUi.MUTED, false), 3);
+        }
+        shell.add(payment, shell.text("Total " + shell.cash(order.optDouble("total")), 19, NativeUi.INK, true), 7);
+        if (!state.equals("cancelled")) {
+            shell.add(payment, shell.button(order.optBoolean("paid") ? "Corregir estado del pago" : "Confirmar dinero recibido", false,
+                    () -> {
+                        if (order.optBoolean("paid")) {
+                            new AlertDialog.Builder(activity)
+                                    .setTitle("¿Marcar pago pendiente?")
+                                    .setMessage("Se quitará la confirmación de cobro de este pedido.")
+                                    .setNegativeButton("Volver", null)
+                                    .setPositiveButton("Confirmar", (d, w) -> {
+                                        if (shell.checkPending(shell.currentId())) return;
+                                        JSONObject change = orderChange(order);
+                                        AppShell.put(change, "paid", false);
+                                        AppShell.put(change, "paidAt", 0L);
+                                        AppShell.put(change, "paymentMethodConfirmed", "");
+                                        AppShell.put(change, "paymentNote", "");
+                                        shell.enqueue("order", change, "order");
+                                    }).show();
+                        } else {
+                            confirmPaymentDialog(shell, order);
+                        }
+                    }), 12);
+        }
+        shell.add(content, payment, 12);
+
+        LinearLayout food = shell.card();
+        shell.add(food, shell.text("PRODUCTOS DEL PEDIDO", 12, NativeUi.WINE, true), 0);
+        JSONArray items = order.optJSONArray("items");
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            shell.add(food, shell.text(item.optInt("quantity") + " × " + item.optString("name") + " · "
+                    + shell.cash(item.optDouble("price") * item.optInt("quantity")), 16, NativeUi.INK, false), 10);
+        }
+        shell.add(food, shell.text("Entrega: " + (order.optString("fulfillment").equals("delivery")
+                ? (order.optBoolean("deliveryOffer") ? "Gratis por promoción" : shell.cash(order.optDouble("fee")))
+                : "Recojo sin costo"), 14, NativeUi.MUTED, false), 12);
+        shell.add(content, food, 12);
+
+        if (SaleRules.validPhone(order.optString("phone"))) {
+            shell.add(content, ui.button("Llamar al cliente", false, null, () -> {
+                try {
+                    activity.startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + order.optString("phone"))));
+                } catch (Exception error) {
+                    shell.toast("No hay una aplicación de llamadas disponible.");
+                }
+            }), 12);
+        }
+
+        String place = delivery
+                ? DeliveryDestination.typeLabel(order.optString("destinationType", "home")) + " · " + order.optString("zone")
+                        + "\n" + order.optString("address") + "\nReferencia: " + order.optString("reference")
+                : order.optString("pickup", shell.data().optJSONObject("settings").optString("pickup"));
+        LinearLayout arrival = ui.message(delivery ? "REPARTO A COORDINAR" : "RECOJO EN LA OLLA", place, NativeUi.CARD);
+        if (!order.optString("driver").isEmpty()) {
+            shell.add(arrival, shell.text("Reparte: " + order.optString("driver"), 16, NativeUi.GREEN, true), 10);
+        }
+        if (!order.optString("deliveryWindow").isEmpty()) {
+            shell.add(arrival, shell.text("Horario acordado: " + order.optString("deliveryWindow"), 15, NativeUi.INK, true), 8);
+        }
+        if (delivery && !Arrays.asList("delivered", "cancelled").contains(state)) {
+            shell.add(arrival, shell.button("Organizar reparto", false, () -> editDispatch(shell, order)), 12);
+        }
+        if (!delivery) {
+            shell.add(arrival, shell.text(SaleSchedule.window(order), 14, NativeUi.INK, false), 8);
+        }
+
+        JSONObject deliveryPoint = order.optJSONObject("deliveryLocation");
+        if (delivery) {
+            boolean exact = DeliveryDestination.validPoint(deliveryPoint);
+            String addressQuery = DeliveryDestination.addressGeo(order);
+            if (exact || !order.optString("address").isEmpty()) {
+                if (exact) {
+                    shell.add(arrival, shell.text("Punto confirmado · precisión aproximada: "
+                            + Math.round(deliveryPoint.optDouble("accuracy")) + " m", 13, NativeUi.MUTED, false), 8);
+                }
+                shell.add(arrival, ui.button(exact ? "Abrir ubicación" : "Buscar dirección en Maps", false, "pin", () -> {
+                    try {
+                        String uri = exact ? DeliveryDestination.geo(deliveryPoint) : addressQuery;
+                        activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(uri)));
+                    } catch (Exception error) {
+                        shell.toast("No hay una aplicación de mapas disponible. La dirección escrita se conserva.");
+                    }
+                }), 10);
+            }
+        }
+
+        shell.add(content, arrival, 12);
+        if (!Arrays.asList("delivering", "delivered", "cancelled", "pickup_available").contains(state)) {
+            shell.menu("Fecha y recojo de este pedido", "Revisar o editar la fecha acordada", "clock",
+                    () -> ScheduleScreen.openSchedule(shell, true));
+        }
+
+        if (shell.store().hasPending(shell.currentId())) {
+            shell.add(content, ui.message("Cambios guardados",
+                    "La aplicación de clientes los verá al actualizar este pedido en el mismo celular.", NativeUi.GOLD), 12);
+        }
+
         if (!Arrays.asList("delivering", "delivered", "cancelled").contains(state)) {
             shell.add(content, shell.button("Cancelar este pedido", false, () -> new AlertDialog.Builder(activity)
                     .setTitle("¿Cancelar el pedido?")
@@ -365,9 +397,15 @@ final class OrderScreen {
     }
 
     static void showOrderFilters(AppShell shell) {
-        if (shell.orderDate().isEmpty()) {
-            shell.orderDate(shell.data().optJSONObject("settings").optString("saleDate"));
-        }
+        LinearLayout quickFilters = new LinearLayout(shell.activity());
+        addOrderFilter(shell, quickFilters, "Estado del pedido",
+                new String[]{"Todos los estados", "En curso", "Por confirmar", "Terminados"},
+                new String[]{"all", "active", "registered", "finished"}, shell.orderFilter(), shell::orderFilter);
+        addOrderFilter(shell, quickFilters, "Estado del pago",
+                new String[]{"Todos los pagos", "Pago pendiente", "Pagado"},
+                new String[]{"all", "unpaid", "paid"}, shell.orderPayment(), shell::orderPayment);
+        shell.add(shell.content(), quickFilters, 10);
+
         List<String> dates = shell.sellingDays(), ids = new ArrayList<>(), names = new ArrayList<>();
         ids.add("*");
         names.add("Todas las fechas");
@@ -391,6 +429,23 @@ final class OrderScreen {
             shell.orderDelivery(value);
             shell.render();
         });
+    }
+
+    private static void addOrderFilter(AppShell shell, LinearLayout row, String title, String[] labels,
+                                       String[] values, String selected, java.util.function.Consumer<String> change) {
+        int index = Math.max(0, Arrays.asList(values).indexOf(selected));
+        TextView button = shell.button(labels[index], false, () ->
+                new AlertDialog.Builder(shell.activity()).setTitle(title)
+                        .setSingleChoiceItems(labels, index, (dialog, selectedIndex) -> {
+                            dialog.dismiss();
+                            change.accept(values[selectedIndex]);
+                            shell.render();
+                        }).setNegativeButton("Volver", null).show());
+        button.setTextSize(14);
+        button.setContentDescription(title + ": " + labels[index]);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, 1);
+        if (row.getChildCount() == 0) params.rightMargin = shell.dp(8);
+        row.addView(button, params);
     }
 
     static boolean visibleOrder(AppShell shell, JSONObject order) {
