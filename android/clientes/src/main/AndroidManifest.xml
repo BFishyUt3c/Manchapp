@@ -10,7 +10,7 @@
     <package android:name="com.bbva.nxt_peru" />
     <package android:name="com.scotiabank.android" />
   </queries>
-  <application android:label="ManchApp Pedidos" android:icon="@drawable/icon" android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true">
+  <application android:label="ManchApp Pedidos" android:icon="@drawable/portada_pedidos" android:roundIcon="@drawable/portada_pedidos" android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true">
     <activity android:name="pe.manchapp.beta.CustomerActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
       <intent-filter>

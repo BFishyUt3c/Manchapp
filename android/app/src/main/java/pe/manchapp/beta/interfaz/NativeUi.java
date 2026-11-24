@@ -7,9 +7,9 @@ import android.view.*;
 import android.widget.*;
 
 final class NativeUi {
-    static final int WINE=0xff861b3f, DEEP=0xff59152c, CORAL=0xffba3a25,
-        GOLD=0xfff2ba4f, BG=0xfff7ddb8, CARD=0xfffff0d5, INK=0xff35221c,
-        MUTED=0xff795644, LINE=0xffdfb68a, GREEN=0xff316347, SOFT=0xfff2c3a9;
+    static final int WINE=0xff7b2d4e, DEEP=0xff4a1d34, CORAL=0xffb23a2b,
+        GOLD=0xffd99a2b, BG=0xfffff6ea, CARD=0xffffffff, INK=0xff2a1e1a,
+        MUTED=0xff6b5448, LINE=0xffe6d3c0, GREEN=0xff2f6b4f, SOFT=0xfff3dfc6;
     final Context context;
     final Typeface regular, bold, heavy;
     NativeUi(Context context) {

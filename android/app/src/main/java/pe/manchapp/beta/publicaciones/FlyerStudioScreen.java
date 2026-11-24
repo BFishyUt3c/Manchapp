@@ -461,7 +461,7 @@ final class FlyerStudioScreen {
         });
     }
 
-    private static void openWhatsAppOrChooser(MainActivity activity, Intent share, String title, boolean preferWhatsApp) {
+    static void openWhatsAppOrChooser(MainActivity activity, Intent share, String title, boolean preferWhatsApp) {
         if (preferWhatsApp) {
             for (String pkg : new String[]{"com.whatsapp", "com.whatsapp.w4b"}) {
                 try {

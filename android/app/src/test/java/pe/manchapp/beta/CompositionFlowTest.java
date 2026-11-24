@@ -36,6 +36,21 @@ public class CompositionFlowTest {
         CompositionDocument restored=CompositionDocument.open(context,doc.id());assertEquals(doc.state.toString(),restored.state.toString());exported=restored.export();assertEquals(768,exported.getWidth());assertEquals(960,exported.getHeight());assertEquals(Color.BLUE,exported.getPixel(0,0));assertEquals(Color.BLUE,exported.getPixel(767,959));exported.recycle();
         doc.addProduct(product);doc.addProduct(product);try{doc.addProduct(product);fail("More than four products must be rejected");}catch(IOException expected){assertTrue(expected.getMessage().contains("4 productos"));}assertEquals(4,doc.layers().length());doc.close();restored.close();
     }
+    @Test public void backgroundFitModesResizeBackground()throws Exception{
+        CompositionDocument doc=CompositionDocument.create(context,product,back);
+        assertEquals("cover",doc.state.getString("bgFit"));
+        doc.state.put("format","square");
+        RectF cover=doc.backgroundRect();
+        doc.state.put("bgFit","contain");RectF contain=doc.backgroundRect();
+        doc.state.put("bgFit","stretch");RectF stretch=doc.backgroundRect();
+        assertEquals(960f,cover.height(),.1);
+        assertEquals(480f,contain.height(),.1);
+        assertEquals(240f,contain.top,.1);
+        assertEquals(960f,stretch.height(),.1);
+        assertEquals(0f,stretch.left,.1);
+        doc.close();
+    }
+
     @Test public void actualDragMovesOnlySelectedProductAndPersistsOnRelease()throws Exception{
         CompositionDocument doc=CompositionDocument.create(context,product,back);String id=doc.layers().getJSONObject(0).getString("id");final int[] saved={0};PhotoCompositionView view=new PhotoCompositionView(context,doc,id,new PhotoCompositionView.Listener(){public void selected(){}public void failed(){fail("Composition cannot fail while drawing");}public void changed(String before){try{doc.save();saved[0]++;}catch(Exception error){throw new RuntimeException(error);}}});FrameLayout host=new FrameLayout(context);host.addView(view,new FrameLayout.LayoutParams(-1,-1));host.measure(View.MeasureSpec.makeMeasureSpec(720,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));host.layout(0,0,720,800);
         long now=android.os.SystemClock.uptimeMillis();for(int i=0;i<3;i++){MotionEvent event=MotionEvent.obtain(now,now+i*30,i==0?MotionEvent.ACTION_DOWN:i==1?MotionEvent.ACTION_MOVE:MotionEvent.ACTION_UP,i==0?360:460,400,0);assertTrue(view.onTouchEvent(event));event.recycle();}assertEquals(1,saved[0]);assertTrue(doc.layer(id).getDouble("x")>.6);assertEquals(0,doc.state.getDouble("bgX"),0);assertEquals(doc.layer(id).getDouble("x"),CompositionDocument.open(context,doc.id()).layer(id).getDouble("x"),0);

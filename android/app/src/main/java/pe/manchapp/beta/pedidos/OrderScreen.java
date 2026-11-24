@@ -69,6 +69,7 @@ final class OrderScreen {
         quickActions.addView(addOrder, actLeft);
         quickActions.addView(summaryBtn, new LinearLayout.LayoutParams(0, -2, 1));
         shell.add(content, quickActions, 12);
+        shell.add(content, shell.button("Organizar reparto", false, () -> shell.go("dispatch", "")), 12);
 
         showOrderFilters(shell);
         shell.segmented(new String[]{"Por atender", "Terminados"}, shell.orderFilter().equals("active") ? 0 : 1, i -> {

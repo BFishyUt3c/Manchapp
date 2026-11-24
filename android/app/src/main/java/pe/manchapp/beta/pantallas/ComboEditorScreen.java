@@ -1,6 +1,7 @@
 package pe.manchapp.beta;
 
 import android.app.AlertDialog;
+import android.graphics.Bitmap;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -21,6 +22,80 @@ final class ComboEditorScreen {
             return;
         }
         shell.go("promo", "");
+    }
+
+    private static void createComboImage(AppShell shell, JSONObject draft) {
+        MainActivity activity = shell.activity();
+        ArrayList<String> ids = new ArrayList<>(shell.comboIds);
+        ArrayList<JSONObject> products = new ArrayList<>();
+        for (String id : ids) {
+            JSONObject product = shell.find("products", id);
+            if (product != null && ImageTools.hasProductPhoto(product)) products.add(product);
+        }
+        if (products.isEmpty()) {
+            shell.toast("Elige productos con fotos para crear la imagen.");
+            return;
+        }
+        if (products.size() > 4) {
+            shell.toast("Puedes combinar hasta 4 productos en una imagen.");
+            return;
+        }
+        shell.toast("Preparando la imagen del combo...");
+        shell.worker().execute(() -> {
+            Bitmap background = null;
+            Bitmap exported = null;
+            CompositionDocument document = null;
+            try {
+                background = FoodPhotoEngine.texture(960, 960, "cloth");
+                for (JSONObject product : products) {
+                    Bitmap source = ImageTools.productPhoto(activity, product, 960);
+                    if (source == null) continue;
+                    try (FoodPhotoEngine engine = new FoodPhotoEngine(activity, source)) {
+                        engine.includeObjects(true);
+                        Bitmap cutout = engine.render(true, "transparent");
+                        try {
+                            if (document == null) {
+                                document = CompositionDocument.create(activity, cutout, background, source);
+                            } else {
+                                document.layers().put(document.prepareProduct(cutout, source));
+                            }
+                        } finally {
+                            cutout.recycle();
+                        }
+                    } finally {
+                        source.recycle();
+                    }
+                }
+                if (document == null) throw new java.io.IOException("No hay fotos disponibles.");
+                JSONArray layers = document.layers();
+                int columns = (int) Math.ceil(Math.sqrt(layers.length()));
+                int rows = (layers.length() + columns - 1) / columns;
+                for (int i = 0; i < layers.length(); i++) {
+                    layers.getJSONObject(i).put("x", (i % columns + .5) / columns)
+                            .put("y", (i / columns + .5) / rows).put("scale", 1.2 / Math.max(columns, rows));
+                }
+                document.save();
+                exported = document.export();
+                String image = ImageTools.encodeEdited(exported);
+                activity.runOnUiThread(() -> {
+                    if (activity.isFinishing() || activity.isDestroyed() || shell.comboDraft() != draft
+                            || !ids.equals(new ArrayList<>(shell.comboIds))) return;
+                    AppShell.put(draft, "image", image);
+                    AppShell.put(draft, "imageReference", false);
+                    shell.toast("Imagen del combo lista.");
+                });
+            } catch (Exception | OutOfMemoryError error) {
+                activity.runOnUiThread(() -> {
+                    if (!activity.isFinishing() && !activity.isDestroyed()) {
+                        shell.toast("No pudimos crear la imagen. Prueba con menos productos.");
+                    }
+                });
+            } finally {
+                if (document != null) document.close();
+                if (background != null) background.recycle();
+                if (exported != null) exported.recycle();
+            }
+        });
     }
 
     private static JSONArray getExtras(JSONObject draft) {
@@ -140,6 +215,8 @@ final class ComboEditorScreen {
                     } else {
                         shell.comboIds.remove(id);
                     }
+                    draft.remove("image");
+                    draft.remove("imageReference");
                     updateSummary.run();
                 });
                 shell.add(listContainer, box, 2);
@@ -203,6 +280,7 @@ final class ComboEditorScreen {
         updateSummary.run();
 
         shell.add(content, productsCard, 14);
+        shell.add(content, shell.button("Crear imagen del combo", false, () -> createComboImage(shell, draft)), 10);
 
         // 2. Datos del combo
         shell.add(content, ui.heading("Datos del combo", 19), 20);
@@ -278,8 +356,8 @@ final class ComboEditorScreen {
                         .put("portion", desc)
                         .put("line", "commercial")
                         .put("available", true)
-                        .put("image", "")
-                        .put("imageReference", true)
+                        .put("image", draft.optString("image"))
+                        .put("imageReference", draft.optBoolean("imageReference", true))
                         .put("version", 0)
                         .put("comboProductIds", new JSONArray(shell.comboIds))
                         .put("comboExtras", currentExtras);

@@ -25,10 +25,11 @@ public class PhotoEditorUiTest {
     public static class PreviewRenderer {
         private Bitmap source;
         static boolean failMask=false;
+        static String lastBackground="";
         @Implementation protected void __constructor__(Context context,Bitmap bitmap){source=bitmap;}
         @Implementation protected void includeObjects(boolean value){}
         @Implementation protected void setManualMask(Bitmap value){}
-        @Implementation protected Bitmap render(float strength,String background)throws IOException{if(failMask&&background.equals("transparent"))throw new IOException("No se pudo recortar automáticamente");return source.copy(Bitmap.Config.ARGB_8888,true);}
+        @Implementation protected Bitmap render(float strength,String background)throws IOException{lastBackground=background;if(failMask&&background.equals("transparent"))throw new IOException("No se pudo recortar automáticamente");return source.copy(Bitmap.Config.ARGB_8888,true);}
         @Implementation protected void close(){}
     }
     private static Object field(Object target,String name)throws Exception{Field field=target.getClass().getDeclaredField(name);field.setAccessible(true);return field.get(target);}
@@ -55,6 +56,48 @@ public class PhotoEditorUiTest {
         try(ActivityController<PhotoEditorActivity> controller=Robolectric.buildActivity(PhotoEditorActivity.class).setup().visible()){
             PhotoEditorActivity activity=controller.get();waitIdle(activity);call(activity,"openManualMask");waitIdle(activity);android.content.Intent opened=Shadows.shadowOf(activity).getNextStartedActivityForResult().intent;assertEquals(MaskEditorActivity.class.getName(),opened.getComponent().getClassName());Bitmap mask=MaskEditSession.open(activity,opened.getStringExtra("maskSessionId")).read("current.png");assertNotNull(mask);assertEquals(255,Color.alpha(mask.getPixel(mask.getWidth()/2,mask.getHeight()/2)));mask.recycle();
         }finally{PreviewRenderer.failMask=false;}
+    }
+
+    @Test public void decodeFileKeepsOpaquePhotoAtRequestedEdge()throws Exception{
+        Bitmap source=Bitmap.createBitmap(1600,1600,Bitmap.Config.ARGB_8888);
+        source.eraseColor(Color.DKGRAY);
+        File file=new File(RuntimeEnvironment.getApplication().getCacheDir(),"decode-"+System.nanoTime()+".png");
+        try(OutputStream out=new FileOutputStream(file)){assertTrue(source.compress(Bitmap.CompressFormat.PNG,100,out));}
+        Bitmap decoded=ImageTools.decodeFile(file,1280);
+        assertEquals(1280,Math.max(decoded.getWidth(),decoded.getHeight()));
+        assertEquals(Bitmap.Config.ARGB_8888,decoded.getConfig());
+        assertEquals(255,Color.alpha(decoded.getPixel(10,10)));
+    }
+
+    @Test public void transparentFailureKeepsEditWithoutOpeningBrush()throws Exception{
+        source();PreviewRenderer.failMask=true;
+        try(ActivityController<PhotoEditorActivity> controller=Robolectric.buildActivity(PhotoEditorActivity.class).setup().visible()){
+            PhotoEditorActivity activity=controller.get();waitIdle(activity);
+            View root=(View)field(activity,"root");
+            root.findViewWithTag("tool:background").performClick();
+            root.findViewWithTag("transparent").performClick();
+            waitIdle(activity);
+            assertNull(Shadows.shadowOf(activity).getNextStartedActivityForResult());
+            assertNotNull(field(activity,"result"));
+        }finally{PreviewRenderer.failMask=false;}
+    }
+
+    @Test public void blurGoesThroughEngineAndCanReturnToTransparent()throws Exception{
+        source();PreviewRenderer.lastBackground="";
+        try(ActivityController<PhotoEditorActivity> controller=Robolectric.buildActivity(PhotoEditorActivity.class).setup().visible()){
+            PhotoEditorActivity activity=controller.get();waitIdle(activity);
+            View root=(View)field(activity,"root");
+            root.findViewWithTag("tool:background").performClick();
+            root.findViewWithTag("transparent").performClick();
+            waitIdle(activity);
+            root.findViewWithTag("blur").performClick();
+            waitIdle(activity);
+            assertEquals("blur",PreviewRenderer.lastBackground);
+            root.findViewWithTag("transparent").performClick();
+            waitIdle(activity);
+            assertEquals("transparent",PreviewRenderer.lastBackground);
+            assertNotNull(field(activity,"result"));
+        }
     }
 
 }

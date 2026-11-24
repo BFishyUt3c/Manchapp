@@ -344,6 +344,7 @@ final class AppShell {
             case "order":
             case "summary":
             case "orderSchedule":
+            case "dispatch":
                 return "orders";
             default:
                 return "home";
@@ -572,6 +573,7 @@ final class AppShell {
                 case "detail": ProductScreen.showProduct(this); break;
                 case "edit": ProductEditorScreen.showEditor(this); break;
                 case "orders": OrderScreen.showOrders(this); break;
+                case "dispatch": DispatchScreen.show(this, currentId); break;
                 case "order": OrderScreen.showOrder(this); break;
                 case "settings": SettingsScreen.showSettings(this); break;
                 case "profile": SettingsScreen.showProfile(this); break;
@@ -600,6 +602,7 @@ final class AppShell {
     String screenTitle() {
         switch (screen) {
             case "summary": return "Resumen de jornada";
+            case "dispatch": return "Reparto";
             case "schedule":
             case "orderSchedule": return "Fecha de venta";
             case "home": return "Inicio";
