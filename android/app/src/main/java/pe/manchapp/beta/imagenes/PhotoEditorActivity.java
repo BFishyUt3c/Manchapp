@@ -31,7 +31,8 @@ public final class PhotoEditorActivity extends Activity {
     private final Map<String,TextView> tabs=new HashMap<>(),comparisons=new HashMap<>();
     private final Map<String,View> backgrounds=new HashMap<>();
     private final List<Bitmap> swatches=new ArrayList<>();
-    private Dialog cropDialog;
+    private Dialog cropDialog,guidedDialog;
+    private float guidedX=.5f,guidedY=.5f;
     static File input(android.content.Context context){return new File(context.getCacheDir(),"photo-editor-source.jpg");}
     static File output(android.content.Context context){return new File(context.getCacheDir(),"photo-editor-result.txt");}
 
@@ -42,7 +43,7 @@ public final class PhotoEditorActivity extends Activity {
         worker.execute(()->{try{original=ImageTools.decodeFile(input(this),1280);sourceTransparent=ImageTools.hasTransparency(original);engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){Toast.makeText(this,"No pudimos abrir esta foto. La imagen anterior se conserva.",Toast.LENGTH_LONG).show();finish();}});}});
     }
     private void draw(){
-        root=ui.column();root.setBackgroundColor(PhotoUi.BG);setContentView(root);
+        root=ui.column();root.setBackgroundColor(PhotoUi.BG);setContentView(root);ui.insets(root);
         save=ui.button("Listo",true,()->save());save.setTag("editor:save");root.addView(ui.header("Editar foto",ui.icon("back","Volver sin aplicar",()->finish()),save));
         FrameLayout stage=new FrameLayout(this);stage.setTag("editor:stage");preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.FIT_CENTER);preview.setPadding(ui.dp(16),ui.dp(12),ui.dp(16),ui.dp(12));preview.setContentDescription("Vista previa de tu foto");stage.addView(preview,new FrameLayout.LayoutParams(-1,-1));root.addView(stage,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout compare=new LinearLayout(this);compare.setPadding(ui.dp(3),ui.dp(3),ui.dp(3),ui.dp(3));compare.setBackground(ui.background(0xee24252c,PhotoUi.LINE,20));
@@ -137,6 +138,9 @@ public final class PhotoEditorActivity extends Activity {
         TextView manual = ui.button("Borrar fondo a mano", false, this::openManualMask);
         manual.setTag("editor:background-mask");
         ui.add(panel, manual, 8);
+        TextView guided = ui.button("Toca el objeto", false, this::openGuidedMask);
+        guided.setTag("editor:guided-mask");
+        ui.add(panel, guided, 8);
         Switch complete = backgroundSwitch("Incluir plato y acompañamientos", includeObjects);
         complete.setOnCheckedChangeListener((view, checked) -> {
             includeObjects = checked;
@@ -159,6 +163,63 @@ public final class PhotoEditorActivity extends Activity {
         toggle.setChecked(checked);
         return toggle;
     }
+    private void openGuidedMask(){
+        if(busy||destroyed||original==null||engine==null||guidedDialog!=null)return;
+        guidedX = .5f;
+        guidedY = .5f;
+        Dialog dialog=new Dialog(this,android.R.style.Theme_Material_Light_NoActionBar);guidedDialog=dialog;
+        LinearLayout body=ui.column();body.setBackgroundColor(PhotoUi.BG);dialog.setContentView(body);ui.insets(body);
+        TextView apply=ui.button("Recortar",true,()->applyGuidedMask());apply.setTag("guided:apply");
+        body.addView(ui.header("Toca el objeto",ui.icon("back","Cancelar",()->dialog.dismiss()),apply));
+        TextView hint=ui.text("Toca el objeto que quieres recortar.",13,PhotoUi.MUTED,false);hint.setGravity(Gravity.CENTER);hint.setPadding(ui.dp(12),ui.dp(10),ui.dp(12),ui.dp(10));body.addView(hint);
+        ImageView stage=new ImageView(this);stage.setTag("guided:stage");stage.setScaleType(ImageView.ScaleType.FIT_CENTER);stage.setImageBitmap(original);stage.setContentDescription("Foto para elegir el objeto");stage.setOnTouchListener((view,event)->{if(event.getAction()==MotionEvent.ACTION_UP)guidedTap(stage,event.getX(),event.getY());return true;});
+        body.addView(stage,new LinearLayout.LayoutParams(-1,0,1));
+        dialog.setOnDismissListener(value->{if(guidedDialog==dialog)guidedDialog=null;});
+        dialog.show();Window window=dialog.getWindow();if(window!=null){window.setLayout(-1,-1);window.setStatusBarColor(PhotoUi.BG);window.setNavigationBarColor(PhotoUi.BG);}
+    }
+    private void guidedTap(ImageView view, float x, float y) {
+        Matrix inverse = new Matrix();
+        if (!view.getImageMatrix().invert(inverse)) return;
+        float[] point = {x - view.getPaddingLeft(), y - view.getPaddingTop()};
+        inverse.mapPoints(point);
+        RectF bounds = new RectF(view.getDrawable().getBounds());
+        if (!bounds.contains(point[0], point[1])) return;
+        guidedX = (point[0] - bounds.left) / bounds.width();
+        guidedY = (point[1] - bounds.top) / bounds.height();
+    }
+
+    private void applyGuidedMask() {
+        if (guidedDialog != null) guidedDialog.dismiss();
+        if (busy || destroyed || engine == null) return;
+        busy = true;
+        enabled(false);
+        progress.setText("Recortando el objeto…");
+        float x = guidedX, y = guidedY;
+        worker.execute(() -> {
+            Bitmap mask = null;
+            try {
+                mask = engine.guidedMaskBitmap(x, y);
+                String sessionId = MaskEditSession.create(this, original, mask).id();
+                engine.setManualMask(mask);
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    manualSession = sessionId;
+                    background = "transparent";
+                    showOriginal = false;
+                    worker.execute(this::renderPhoto);
+                });
+            } catch (Exception | OutOfMemoryError error) {
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    busy = false;
+                    enabled(true);
+                    openManualMask();
+                });
+            } finally {
+                if (mask != null) mask.recycle();
+            }
+        });
+    }
     private void applyManualMask()throws Exception{if(manualSession!=null&&!manualSession.isEmpty()){Bitmap mask=MaskEditSession.open(this,manualSession).read("current.png");try{engine.setManualMask(mask);}finally{mask.recycle();}}}
     private void openManualMask(){if(busy)return;busy=true;enabled(false);progress.setText("Preparando recorte manual…");worker.execute(()->{Bitmap source=null,cutout=null;try{engine.includeObjects(includeObjects);source=engine.render(improve?intensity/100f:0,"original");try{cutout=engine.render(improve?intensity/100f:0,"transparent");}catch(IOException noMask){cutout=source.copy(Bitmap.Config.ARGB_8888,true);}MaskEditSession session=MaskEditSession.create(this,source,cutout);engine.close();engine=null;runOnUiThread(()->{if(!destroyed){busy=false;startActivityForResult(new Intent(this,MaskEditorActivity.class).putExtra("maskSessionId",session.id()).putExtra("restoreLimited",sourceTransparent),93);}});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos abrir la corrección manual. La foto anterior se conserva.");}});}finally{if(source!=null)source.recycle();if(cutout!=null)cutout.recycle();}});}
     private void pickBackground(){if(busy)return;try{startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE),91);}catch(Exception error){Toast.makeText(this,"No pudimos abrir la galería.",Toast.LENGTH_LONG).show();}}
@@ -177,7 +238,27 @@ public final class PhotoEditorActivity extends Activity {
         final float amount=improve?intensity/100f:0;final String selectedBackground=background;final boolean selectedAngle=angledBackground;final RectF selectedCrop=new RectF(crop);Bitmap working=null,before=null;
         try{engine.includeObjects(includeObjects);engine.setAngledBackground(selectedAngle);working=engine.render(amount,selectedBackground);Bitmap next=PhotoCropView.apply(working,selectedCrop);if(next!=working)working.recycle();working=null;try{before=PhotoCropView.apply(original,selectedCrop);}catch(Exception|OutOfMemoryError error){next.recycle();throw error;}final Bitmap originalView=before;before=null;
             runOnUiThread(()->{if(destroyed){next.recycle();if(originalView!=original)originalView.recycle();return;}Bitmap old=result,oldComparison=comparison;result=next;comparison=originalView;appliedBackground=selectedBackground;appliedAngle=selectedAngle;busy=false;display();if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();enabled(true);progress.setText(selectedBackground.equals("transparent")?"Sin fondo · revisa los bordes":"");});
-        }catch(Exception|OutOfMemoryError error){if(working!=null)working.recycle();if(before!=null&&before!=original)before.recycle();runOnUiThread(()->{if(destroyed)return;busy=false;background=appliedBackground;angledBackground=appliedAngle;showOriginal=result==null;display();enabled(true);progress.setText("No pudimos aplicar el cambio. Conservamos tu recorte y la última foto.");Toast.makeText(this,error instanceof IOException?error.getMessage():"La foto es muy grande para procesarla. Tu recorte y la última edición siguen aquí.",Toast.LENGTH_LONG).show();});}
+        } catch (Exception | OutOfMemoryError error) {
+            if (working != null) working.recycle();
+            if (before != null && before != original) before.recycle();
+            runOnUiThread(() -> {
+                if (destroyed) return;
+                busy = false;
+                background = appliedBackground;
+                angledBackground = appliedAngle;
+                showOriginal = result == null;
+                display();
+                enabled(true);
+                if (error instanceof FoodPhotoEngine.MaskFallbackException && "transparent".equals(selectedBackground)) {
+                    progress.setText("Toca el objeto para recortar.");
+                    openGuidedMask();
+                } else {
+                    progress.setText("No pudimos aplicar el cambio. Conservamos tu recorte y la última foto.");
+                    Toast.makeText(this, error instanceof IOException ? error.getMessage()
+                            : "La foto es muy grande para procesarla. Tu recorte y la última edición siguen aquí.", Toast.LENGTH_LONG).show();
+                }
+            });
+        }
     }
     private void display(){perspective.setVisibility(PhotoBackgrounds.isPreset(background)?View.VISIBLE:View.GONE);perspective.setChecked(angledBackground);preview.setBackground((showOriginal?sourceTransparent:background.equals("transparent")||sourceTransparent&&background.equals("original"))?new PhotoUi.Checker(ui.dp(10)):null);preview.setImageBitmap(showOriginal||result==null?(comparison==null?original:comparison):result);for(Map.Entry<String,TextView> entry:comparisons.entrySet()){boolean active=entry.getKey().equals(showOriginal?"original":"result");entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,0,17));entry.getValue().setTextColor(active?PhotoUi.TEXT:PhotoUi.MUTED);}undoCrop.setEnabled(!busy&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);for(Map.Entry<String,View> entry:backgrounds.entrySet()){boolean active=entry.getKey().equals(background);entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,active?PhotoUi.LIGHT:0,12));}}
     private void enabled(boolean value){save.setEnabled(value);save.setAlpha(value?1:.4f);enableChildren(toolBody,value);if(undoCrop!=null){undoCrop.setEnabled(value&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);}for(TextView comparison:comparisons.values())comparison.setEnabled(value);View slider=findSeekBar(toolPanels.get("adjust"));if(slider!=null)slider.setEnabled(value&&improve);}
@@ -185,5 +266,5 @@ public final class PhotoEditorActivity extends Activity {
     private void enableChildren(android.view.ViewGroup group,boolean value){for(int i=0;i<group.getChildCount();i++){View child=group.getChildAt(i);child.setEnabled(value);if(child instanceof android.view.ViewGroup)enableChildren((android.view.ViewGroup)child,value);}}
     private void save(){if(busy)return;final Bitmap chosen=result==null?(comparison==null?original:comparison):result;if(chosen==null)return;busy=true;enabled(false);progress.setText("Guardando foto…");worker.execute(()->{android.util.AtomicFile file=new CrossFile(output(this));FileOutputStream out=null;try{String encoded=ImageTools.encodeEdited(chosen);out=file.startWrite();out.write(encoded.getBytes("UTF-8"));file.finishWrite(out);runOnUiThread(()->{if(!destroyed){setResult(RESULT_OK);finish();}});}catch(Exception|OutOfMemoryError error){if(out!=null)file.failWrite(out);runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos guardar. Tu foto sigue abierta.");}});}});}
     @Override public void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("manualSession",manualSession);state.putBoolean("includeObjects",includeObjects);state.putBoolean("improve",improve);state.putInt("intensity",intensity);state.putString("tool",tool);state.putBoolean("showOriginal",showOriginal);state.putString("background",background);state.putBoolean("angledBackground",angledBackground);state.putFloatArray("crop",new float[]{crop.left,crop.top,crop.right,crop.bottom});}
-    @Override public void onDestroy(){destroyed=true;if(cropDialog!=null)cropDialog.dismiss();preview.setImageDrawable(null);for(Bitmap swatch:swatches)swatch.recycle();worker.execute(()->{if(engine!=null)engine.close();if(comparison!=null&&comparison!=original&&!comparison.isRecycled())comparison.recycle();if(original!=null&&!original.isRecycled())original.recycle();if(result!=null&&result!=original&&!result.isRecycled())result.recycle();});worker.shutdown();super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;if(cropDialog!=null)cropDialog.dismiss();if(guidedDialog!=null)guidedDialog.dismiss();preview.setImageDrawable(null);for(Bitmap swatch:swatches)swatch.recycle();worker.execute(()->{if(engine!=null)engine.close();if(comparison!=null&&comparison!=original&&!comparison.isRecycled())comparison.recycle();if(original!=null&&!original.isRecycled())original.recycle();if(result!=null&&result!=original&&!result.isRecycled())result.recycle();});worker.shutdown();super.onDestroy();}
 }

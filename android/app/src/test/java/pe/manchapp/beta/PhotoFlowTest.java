@@ -54,6 +54,25 @@ public class PhotoFlowTest {
         }
     }
 
+    @Test public void cameraDecodeUses1280AndWritesEditorSourceOnce()throws Exception{
+        Context context=RuntimeEnvironment.getApplication();
+        Bitmap source=Bitmap.createBitmap(1600,1600,Bitmap.Config.ARGB_8888);source.eraseColor(Color.DKGRAY);
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();source.compress(Bitmap.CompressFormat.PNG,100,bytes);source.recycle();
+        Uri uri=Uri.parse("content://pe.manchapp.beta.files/studio-camera.jpg");
+        Shadows.shadowOf(context.getContentResolver()).registerInputStreamSupplier(uri,()->new ByteArrayInputStream(bytes.toByteArray()));
+        try(ActivityController<PhotoStudioActivity> controller=Robolectric.buildActivity(PhotoStudioActivity.class).setup().visible()){
+            PhotoStudioActivity activity=controller.get();
+            call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},41,Activity.RESULT_OK,null);
+            waitIdle(activity);
+            Bitmap decoded=ImageTools.decodeFile(PhotoEditorActivity.input(context),1280);
+            assertEquals(1280,Math.max(decoded.getWidth(),decoded.getHeight()));decoded.recycle();
+            assertFalse(PhotoStudioActivity.read(context).optString("source").isEmpty());
+            Intent editor=Shadows.shadowOf(activity).getNextStartedActivityForResult().intent;
+            assertNotNull(editor);
+            assertFalse(editor.getBooleanExtra("includeObjects",true));
+        }
+    }
+
     @Test public void photoCanStartUnsavedProductBeforeNamePriceOrQuantity()throws Exception{
         Bitmap actual=ImageTools.productPhoto(context,new JSONObject().put("id","causa"),640);String source=ImageTools.encodeEdited(actual);actual.recycle();String edited=source;workspace(source,edited);
         try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup().visible()){

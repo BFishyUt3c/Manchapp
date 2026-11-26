@@ -24,14 +24,16 @@ public class PhotoEditorUiTest {
     @Implements(value=FoodPhotoEngine.class,isInAndroidSdk=false)
     public static class PreviewRenderer {
         private Bitmap source;
-        static boolean failMask=false;
+        static boolean failMask=false,guidedApplied=false;
         static String lastBackground="";
         static boolean lastAngle;
+        static float[] lastGuidedTap=null;
         @Implementation protected void __constructor__(Context context,Bitmap bitmap){source=bitmap;}
         @Implementation protected void includeObjects(boolean value){}
         @Implementation protected void setAngledBackground(boolean value){lastAngle=value;}
         @Implementation protected void setManualMask(Bitmap value){}
-        @Implementation protected Bitmap render(float strength,String background)throws IOException{lastBackground=background;if(failMask&&background.equals("transparent"))throw new IOException("No se pudo recortar automáticamente");return source.copy(Bitmap.Config.ARGB_8888,true);}
+        @Implementation protected Bitmap render(float strength,String background)throws IOException{lastBackground=background;if(failMask&&!guidedApplied&&background.equals("transparent"))throw new FoodPhotoEngine.MaskFallbackException("No se pudo recortar automáticamente");Bitmap out=source.copy(Bitmap.Config.ARGB_8888,true);if(guidedApplied){out.setPixel(0,0,Color.TRANSPARENT);out.setPixel(out.getWidth()/2,out.getHeight()/2,Color.rgb(200,100,50));}return out;}
+        @Implementation protected Bitmap guidedMaskBitmap(float nx,float ny){lastGuidedTap=new float[]{nx,ny};guidedApplied=true;Bitmap mask=Bitmap.createBitmap(source.getWidth(),source.getHeight(),Bitmap.Config.ARGB_8888);mask.eraseColor(Color.TRANSPARENT);mask.setPixel(mask.getWidth()/2,mask.getHeight()/2,Color.BLACK);return mask;}
         @Implementation protected void close(){}
     }
     private static Object field(Object target,String name)throws Exception{Field field=target.getClass().getDeclaredField(name);field.setAccessible(true);return field.get(target);}
@@ -126,6 +128,45 @@ public class PhotoEditorUiTest {
             assertEquals("transparent",PreviewRenderer.lastBackground);
             assertNotNull(field(activity,"result"));
         }
+    }
+
+    @Test public void guidedFallbackOpensTapDialogAndProducesTransparentCutout()throws Exception{
+        source();PreviewRenderer.failMask=true;PreviewRenderer.guidedApplied=false;PreviewRenderer.lastGuidedTap=null;
+        try(ActivityController<PhotoEditorActivity> controller=Robolectric.buildActivity(PhotoEditorActivity.class).setup().visible()){
+            PhotoEditorActivity activity=controller.get();waitIdle(activity);View root=(View)field(activity,"root");
+            root.findViewWithTag("tool:background").performClick();
+            root.findViewWithTag("transparent").performClick();
+            waitIdle(activity);
+            Dialog guided=(Dialog)field(activity,"guidedDialog");assertNotNull(guided);
+            View content=guided.findViewById(android.R.id.content);
+            android.widget.ImageView stage=content.findViewWithTag("guided:stage");
+            assertNotNull(stage);
+            stage.layout(0,0,720,800);
+            Rect bounds=stage.getDrawable().getBounds();
+            float[] point={bounds.left+bounds.width()*.25f,bounds.top+bounds.height()*.75f};
+            stage.getImageMatrix().mapPoints(point);
+            Method tap=PhotoEditorActivity.class.getDeclaredMethod("guidedTap",android.widget.ImageView.class,float.class,float.class);
+            tap.setAccessible(true);
+            tap.invoke(activity,stage,point[0],point[1]);
+            assertTrue(content.findViewWithTag("guided:apply").performClick());
+            waitIdle(activity);
+            assertNotNull(PreviewRenderer.lastGuidedTap);
+            assertArrayEquals(new float[]{.25f,.75f},PreviewRenderer.lastGuidedTap,.001f);
+            assertEquals("transparent",PreviewRenderer.lastBackground);
+            Bitmap result=(Bitmap)field(activity,"result");assertNotNull(result);
+            assertEquals(0,Color.alpha(result.getPixel(0,0)));
+            assertEquals(255,Color.alpha(result.getPixel(result.getWidth()/2,result.getHeight()/2)));
+            assertTrue(root.findViewWithTag("editor:save").isEnabled());
+            Bundle state=new Bundle();
+            activity.onSaveInstanceState(state);
+            Bitmap mask=MaskEditSession.open(activity,state.getString("manualSession")).read("current.png");
+            try {
+                assertEquals(0,Color.alpha(mask.getPixel(0,0)));
+                assertEquals(255,Color.alpha(mask.getPixel(mask.getWidth()/2,mask.getHeight()/2)));
+            } finally {
+                mask.recycle();
+            }
+        }finally{PreviewRenderer.failMask=false;PreviewRenderer.guidedApplied=false;PreviewRenderer.lastGuidedTap=null;}
     }
 
 }

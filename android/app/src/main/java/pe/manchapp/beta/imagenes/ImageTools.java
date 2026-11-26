@@ -73,13 +73,14 @@ final class ImageTools {
         if(limited!=bitmap)bitmap.recycle();
         return limited;
     }
-    static Bitmap read(Context context,Uri uri)throws IOException{
+    static Bitmap read(Context context,Uri uri)throws IOException{return read(context,uri,960);}
+    static Bitmap read(Context context,Uri uri,int edge)throws IOException{
         BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(InputStream input=context.getContentResolver().openInputStream(uri)){BitmapFactory.decodeStream(input,null,bounds);}if(bounds.outWidth<=0||bounds.outHeight<=0)throw new IOException("No pudimos leer la foto.");
-        BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,960);Bitmap bitmap;try(InputStream input=context.getContentResolver().openInputStream(uri)){bitmap=BitmapFactory.decodeStream(input,null,options);}if(bitmap==null)throw new IOException("No pudimos leer la foto.");
+        BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=sample(bounds.outWidth,bounds.outHeight,edge);Bitmap bitmap;try(InputStream input=context.getContentResolver().openInputStream(uri)){bitmap=BitmapFactory.decodeStream(input,null,options);}if(bitmap==null)throw new IOException("No pudimos leer la foto.");
         int orientation=1;try(InputStream input=context.getContentResolver().openInputStream(uri)){orientation=new ExifInterface(input).getAttributeInt(ExifInterface.TAG_ORIENTATION,1);}catch(Exception ignored){}
         Matrix transform=new Matrix();switch(orientation){case 2:transform.setScale(-1,1);break;case 3:transform.setRotate(180);break;case 4:transform.setScale(1,-1);break;case 5:transform.setRotate(90);transform.postScale(-1,1);break;case 6:transform.setRotate(90);break;case 7:transform.setRotate(270);transform.postScale(-1,1);break;case 8:transform.setRotate(270);break;}
         if(!transform.isIdentity()){Bitmap rotated=Bitmap.createBitmap(bitmap,0,0,bitmap.getWidth(),bitmap.getHeight(),transform,true);if(rotated!=bitmap)bitmap.recycle();bitmap=rotated;}
-        float scale=Math.min(1f,960f/Math.max(bitmap.getWidth(),bitmap.getHeight()));if(scale<1){Bitmap resized=Bitmap.createScaledBitmap(bitmap,Math.max(1,Math.round(bitmap.getWidth()*scale)),Math.max(1,Math.round(bitmap.getHeight()*scale)),true);if(resized!=bitmap)bitmap.recycle();bitmap=resized;}return bitmap;
+        float scale=Math.min(1f,edge/(float)Math.max(bitmap.getWidth(),bitmap.getHeight()));if(scale<1){Bitmap resized=Bitmap.createScaledBitmap(bitmap,Math.max(1,Math.round(bitmap.getWidth()*scale)),Math.max(1,Math.round(bitmap.getHeight()*scale)),true);if(resized!=bitmap)bitmap.recycle();bitmap=resized;}return bitmap;
     }
     static String encode(Bitmap bitmap)throws IOException{return encode(bitmap,600000);}
     static String encode(Bitmap bitmap,int limit)throws IOException{ByteArrayOutputStream output=new ByteArrayOutputStream();bitmap.compress(Bitmap.CompressFormat.JPEG,82,output);if(output.size()>limit){output.reset();bitmap.compress(Bitmap.CompressFormat.JPEG,65,output);}if(output.size()>limit)throw new IOException("Prueba una foto de menor tamaño.");return "data:image/jpeg;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);}
@@ -96,8 +97,7 @@ final class ImageTools {
         try{
             while(true){
                 output.reset();if(!current.compress(Bitmap.CompressFormat.PNG,100,output))throw new IOException("No pudimos guardar la foto.");
-                if(output.size()<=670000)return "data:image/png;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);
-                if(Math.max(current.getWidth(),current.getHeight())<=128)throw new IOException("Prueba un encuadre más pequeño.");
+                if(output.size()<=1200000||Math.max(current.getWidth(),current.getHeight())<=960)return "data:image/png;base64,"+Base64.encodeToString(output.toByteArray(),Base64.NO_WRAP);
                 Bitmap smaller=Bitmap.createScaledBitmap(current,Math.max(1,Math.round(current.getWidth()*.8f)),Math.max(1,Math.round(current.getHeight()*.8f)),true);
                 if(current!=bitmap)current.recycle();current=smaller;
             }
