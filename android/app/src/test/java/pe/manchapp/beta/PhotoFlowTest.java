@@ -54,7 +54,7 @@ public class PhotoFlowTest {
         }
     }
 
-    @Test public void cameraDecodeUses1280AndWritesEditorSourceOnce()throws Exception{
+    @Test public void cameraPhotoOpensAsTheFirstMovableLayerWithoutPickingABackground()throws Exception{
         Context context=RuntimeEnvironment.getApplication();
         Bitmap source=Bitmap.createBitmap(1600,1600,Bitmap.Config.ARGB_8888);source.eraseColor(Color.DKGRAY);
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();source.compress(Bitmap.CompressFormat.PNG,100,bytes);source.recycle();
@@ -64,12 +64,17 @@ public class PhotoFlowTest {
             PhotoStudioActivity activity=controller.get();
             call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},41,Activity.RESULT_OK,null);
             waitIdle(activity);
-            Bitmap decoded=ImageTools.decodeFile(PhotoEditorActivity.input(context),1280);
-            assertEquals(1280,Math.max(decoded.getWidth(),decoded.getHeight()));decoded.recycle();
             assertFalse(PhotoStudioActivity.read(context).optString("source").isEmpty());
             Intent editor=Shadows.shadowOf(activity).getNextStartedActivityForResult().intent;
-            assertNotNull(editor);
-            assertFalse(editor.getBooleanExtra("includeObjects",true));
+            assertEquals(PhotoComposeActivity.class.getName(),editor.getComponent().getClassName());
+            CompositionDocument scene=CompositionDocument.open(context,editor.getStringExtra("compositionId"));
+            try {
+                assertEquals(1,scene.layers().length());
+                Bitmap first=scene.bitmap(scene.layers().getJSONObject(0).getString("file"));
+                assertEquals(1280,Math.max(first.getWidth(),first.getHeight()));
+            } finally {
+                scene.close();
+            }
         }
     }
 
@@ -77,7 +82,7 @@ public class PhotoFlowTest {
         Bitmap actual=ImageTools.productPhoto(context,new JSONObject().put("id","causa"),640);String source=ImageTools.encodeEdited(actual);actual.recycle();String edited=source;workspace(source,edited);
         try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup().visible()){
             MainActivity activity=controller.get();AppShell shell=(AppShell)field(activity,"shell");LocalStore store=shell.store();int pending=store.snapshot().getJSONArray("pending").length(),products=store.snapshot().getJSONArray("products").length();
-            ProductEditorScreen.attachStudioPhoto(shell,null,true);assertEquals("edit",shell.screen());JSONObject draft=shell.draft();assertEquals("",draft.optString("name"));assertEquals(edited,draft.getString("image"));assertEquals(source,draft.getString("_sourcePhoto"));assertEquals(products,store.snapshot().getJSONArray("products").length());assertEquals(pending,store.snapshot().getJSONArray("pending").length());assertNotNull(text(activity.findViewById(android.R.id.content),"Recortar y mejorar foto"));android.widget.ImageView preview=(android.widget.ImageView)described(activity.findViewById(android.R.id.content),"Vista previa completa de la foto del producto");assertNotNull(preview);assertEquals(android.widget.ImageView.ScaleType.FIT_CENTER,preview.getScaleType());assertTrue(preview.getLayoutParams().height > 0);shot(activity.findViewById(android.R.id.content),"product-photo-first");
+            ProductEditorScreen.attachStudioPhoto(shell,null,true);assertEquals("edit",shell.screen());JSONObject draft=shell.draft();assertEquals("",draft.optString("name"));assertEquals(edited,draft.getString("image"));assertEquals(source,draft.getString("_sourcePhoto"));assertEquals(products,store.snapshot().getJSONArray("products").length());assertEquals(pending,store.snapshot().getJSONArray("pending").length());assertNotNull(text(activity.findViewById(android.R.id.content),"Editar foto"));android.widget.ImageView preview=(android.widget.ImageView)described(activity.findViewById(android.R.id.content),"Vista previa completa de la foto del producto");assertNotNull(preview);assertEquals(android.widget.ImageView.ScaleType.FIT_CENTER,preview.getScaleType());assertTrue(preview.getLayoutParams().height > 0);shot(activity.findViewById(android.R.id.content),"product-photo-first");
             call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},84,Activity.RESULT_CANCELED,null);assertEquals(edited,shell.draft().getString("image"));shell.saveDraft();
         }
         try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup().visible()){

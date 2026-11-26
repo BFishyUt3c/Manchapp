@@ -135,7 +135,7 @@ final class ProductEditorScreen {
             photoPreview.setContentDescription("Vista previa completa de la foto del producto");
             shell.add(photoCard, photoPreview, 10);
             photoPreview.getLayoutParams().height = shell.dp(190);
-            shell.add(photoCard, ui.button("Recortar y mejorar foto", false, "edit", () -> improvePhoto(shell)), 10);
+            shell.add(photoCard, ui.button("Editar foto", false, "edit", () -> improvePhoto(shell)), 10);
         } else {
             shell.add(photoCard, shell.text("Opcional: toma una foto, elige de tu galería o usa una ilustración.",
                     13, NativeUi.MUTED, false), 6);
@@ -378,14 +378,11 @@ final class ProductEditorScreen {
                     original = small;
                 }
                 PhotoOriginals.remember(activity, source.optString("id"), ImageTools.encodeEdited(original));
-                try (OutputStream out = new FileOutputStream(PhotoEditorActivity.input(activity))) {
-                    if (!original.compress(ImageTools.hasTransparency(original) ? Bitmap.CompressFormat.PNG : Bitmap.CompressFormat.JPEG, 95, out)) {
-                        throw new IOException();
-                    }
-                }
+                String id = CompositionDocument.create(activity, original).id();
                 activity.runOnUiThread(() -> {
                     if (!activity.isFinishing() && !activity.isDestroyed()) {
-                        activity.startActivityForResult(new Intent(activity, PhotoEditorActivity.class), 84);
+                        activity.startActivityForResult(new Intent(activity, PhotoComposeActivity.class)
+                                .putExtra("compositionId", id), 84);
                     }
                 });
             } catch (Exception | OutOfMemoryError error) {

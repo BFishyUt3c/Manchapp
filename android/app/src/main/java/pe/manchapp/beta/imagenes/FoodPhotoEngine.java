@@ -12,6 +12,8 @@ import java.util.*;
 
 /** Seller-only OpenCV processing and local U2NetP inference. Single worker owns this session. */
 final class FoodPhotoEngine implements AutoCloseable {
+    private static final int MASK_SIZE = 320;
+
     static final class MaskFallbackException extends IOException {
         MaskFallbackException(String message){super(message);}
         MaskFallbackException(String message,Throwable cause){super(message,cause);}
@@ -87,47 +89,149 @@ final class FoodPhotoEngine implements AutoCloseable {
     }
     void setManualMask(Bitmap bitmap)throws IOException{if(bitmap.getWidth()!=original.cols()||bitmap.getHeight()!=original.rows())throw new IOException("Este recorte no coincide con la foto.");Mat rgba=new Mat(),alpha=new Mat(),next=new Mat();try{Utils.bitmapToMat(bitmap,rgba,true);Core.extractChannel(rgba,alpha,3);alpha.convertTo(next,CvType.CV_32F,1/255.0);if(manualMask!=null)manualMask.release();manualMask=next;next=null;mask=manualMask;}finally{rgba.release();alpha.release();if(next!=null)next.release();}}
     void includeObjects(boolean value){includeObjects=value;mask=manualMask!=null?manualMask:sourceAlpha!=null?sourceAlpha:value?completeMask:plainMask;}
-    private void ensureMask()throws IOException{
-        if(manualMask!=null){mask=manualMask;return;}
-        if(sourceAlpha!=null){mask=sourceAlpha;return;}
-        if(mask!=null)return;
-        if(smallMask!=null){Mat rgb=new Mat(),soft=smallMask.clone();try{Imgproc.resize(original,rgb,new Size(320,320));if(includeObjects)completeObjects(rgb,soft);else refineWithGrabCut(rgb,soft);mask=allowMask(soft,includeObjects);if(includeObjects)completeMask=mask;else plainMask=mask;}finally{rgb.release();soft.release();}return;}long start=android.os.SystemClock.elapsedRealtime();Mat small=new Mat(),floats=new Mat(),blob=null,prediction=null,flat=null,soft=new Mat(),candidate=new Mat();List<Mat> channels=new ArrayList<>();
-        try{
-            if(network==null){network=Dnn.readNetFromONNX(modelFile().getAbsolutePath());network.setPreferableBackend(Dnn.DNN_BACKEND_OPENCV);network.setPreferableTarget(Dnn.DNN_TARGET_CPU);}
-            Imgproc.resize(original,small,new Size(320,320),0,0,Imgproc.INTER_AREA);Mat scalar=small.reshape(1);double max;try{max=Math.max(1,Core.minMaxLoc(scalar).maxVal);}finally{scalar.release();}small.convertTo(floats,CvType.CV_32FC3,1/max);
-            Core.split(floats,channels);double[] means={.485,.456,.406},std={.229,.224,.225};for(int i=0;i<3;i++){Core.subtract(channels.get(i),new Scalar(means[i]),channels.get(i));Core.multiply(channels.get(i),new Scalar(1/std[i]),channels.get(i));}Core.merge(channels,floats);release(channels);
-            blob=Dnn.blobFromImage(floats);network.setInput(blob);prediction=network.forward(network.getUnconnectedOutLayersNames().get(0));
-            flat=prediction.reshape(1,320);Core.MinMaxLocResult range=Core.minMaxLoc(flat);
-            if(range.maxVal-range.minVal<1e-6){soft.create(320,320,CvType.CV_32F);soft.setTo(new Scalar(0));completeObjects(small,soft);mask=finishMask(soft,false);smallMask=soft.clone();if(includeObjects)completeMask=mask;else plainMask=mask;maskMillis=android.os.SystemClock.elapsedRealtime()-start;maskRuns++;return;}
-            flat.convertTo(soft,CvType.CV_32F,1/(range.maxVal-range.minVal),-range.minVal/(range.maxVal-range.minVal));
-            smallMask=soft.clone();if(includeObjects)completeObjects(small,soft);else refineWithGrabCut(small,soft);
-            candidate=allowMask(soft,includeObjects);mask=candidate;if(includeObjects)completeMask=mask;else plainMask=mask;candidate=null;maskMillis=android.os.SystemClock.elapsedRealtime()-start;maskRuns++;
-        }catch(IOException error){throw new MaskFallbackException(error.getMessage(),error);}catch(RuntimeException error){
-            try{
-                Mat rgb=new Mat();
-                try{
-                    soft.create(320,320,CvType.CV_32F);soft.setTo(new Scalar(0));
-                    Imgproc.resize(original,rgb,new Size(320,320));
-                    completeObjects(rgb,soft);
-                    if(smallMask!=null){smallMask.release();smallMask=null;}
-                    mask=finishMask(soft,false);
-                    smallMask=soft.clone();
-                    if(includeObjects)completeMask=mask;else plainMask=mask;
-                    maskMillis=android.os.SystemClock.elapsedRealtime()-start;maskRuns++;
-                    return;
-                }finally{rgb.release();}
-            }catch(Exception fallback){throw new MaskFallbackException("No pudimos separar el fondo de esta foto. Toca el objeto para ayudarnos.",error);}
-        }finally{small.release();floats.release();release(channels);if(blob!=null)blob.release();if(flat!=null)flat.release();if(prediction!=null)prediction.release();soft.release();if(candidate!=null)candidate.release();}
+    private void ensureMask() throws IOException {
+        if (manualMask != null) { mask = manualMask; return; }
+        if (sourceAlpha != null) { mask = sourceAlpha; return; }
+        if (mask != null) return;
+        long start = android.os.SystemClock.elapsedRealtime();
+        Mat input = new Mat();
+        try {
+            Imgproc.resize(original, input, new Size(MASK_SIZE, MASK_SIZE), 0, 0, Imgproc.INTER_AREA);
+            if (smallMask == null) {
+                smallMask = initialMask(input);
+                maskRuns++;
+                maskMillis = android.os.SystemClock.elapsedRealtime() - start;
+            }
+            Mat refined = smallMask.clone();
+            try {
+                if (includeObjects) completeObjects(input, refined);
+                else refineWithGrabCut(input, refined);
+                mask = finishMask(refined, true);
+            } catch (MaskFallbackException | CvException unreliable) {
+                mask = finishMask(smallMask, true);
+            } finally {
+                refined.release();
+            }
+            if (includeObjects) completeMask = mask;
+            else plainMask = mask;
+        } catch (CvException error) {
+            throw new MaskFallbackException("No pudimos separar el fondo. Toca el objeto para ayudarnos.", error);
+        } finally {
+            input.release();
+        }
     }
-    private Mat allowMask(Mat soft,boolean unionFallback)throws IOException{
-        if(!unionFallback){Mat result;try{result=finishMask(soft,true);}catch(MaskFallbackException broad){result=finishMask(soft,false);}double coverage=Core.mean(result).val[0];if(MaskCoverage.tooBroad(coverage)){result.release();throw new MaskFallbackException("El recorte cubre casi toda la foto. Toca el objeto para ayudarnos.");}return result;}
-        try{return finishMask(soft);}catch(IOException strict){Mat rgb=new Mat();try{Imgproc.resize(original,rgb,new Size(320,320));completeObjects(rgb,soft);return finishMask(soft,false);}finally{rgb.release();}}
+
+    private Mat initialMask(Mat input) throws IOException {
+        try {
+            return predictMask(input);
+        } catch (IOException | CvException error) {
+            Mat fallback = Mat.zeros(input.size(), CvType.CV_32F);
+            try {
+                completeObjects(input, fallback);
+                return fallback;
+            } catch (RuntimeException failure) {
+                fallback.release();
+                failure.addSuppressed(error);
+                throw new MaskFallbackException("No pudimos separar el fondo. Toca el objeto para ayudarnos.", failure);
+            }
+        }
     }
-    private Mat finishMask(Mat source)throws IOException{return finishMask(source,true);}
-    private Mat finishMask(Mat source,boolean strict)throws IOException{Mat soft=source.clone(),candidate=new Mat(),kernel=Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE,new Size(3,3)),binary=new Mat(),labels=new Mat(),stats=new Mat(),centroids=new Mat(),keep=new Mat(),component=new Mat();try{
-        Core.compare(soft,new Scalar(.35),binary,Core.CMP_GT);int count=Imgproc.connectedComponentsWithStats(binary,labels,stats,centroids,8,CvType.CV_32S);
-        if(strict&&count>1){int largest=0;for(int i=1;i<count;i++)largest=Math.max(largest,(int)stats.get(i,Imgproc.CC_STAT_AREA)[0]);int minimum=Math.max(24,Math.round(largest*.005f));for(int i=1;i<count;i++){if((int)stats.get(i,Imgproc.CC_STAT_AREA)[0]<minimum)continue;Core.compare(labels,new Scalar(i),component,Core.CMP_EQ);Core.bitwise_or(keep,component,keep);}keep.convertTo(keep,CvType.CV_32F,1/255.0);Core.multiply(soft,keep,soft);}
-        Imgproc.dilate(soft,soft,kernel);Imgproc.resize(soft,candidate,original.size(),0,0,Imgproc.INTER_LINEAR);Imgproc.GaussianBlur(candidate,candidate,new Size(0,0),1.1);Core.min(candidate,new Scalar(1),candidate);Core.max(candidate,new Scalar(0),candidate);double coverage=Core.mean(candidate).val[0];if(candidate.empty()||coverage<=0||(strict&&(coverage<.01||coverage>.985))){candidate.release();throw new MaskFallbackException("El recorte no quedó claro. Toca el objeto para ayudarnos.");}return candidate;}finally{soft.release();kernel.release();binary.release();labels.release();stats.release();centroids.release();keep.release();component.release();}}
+
+    private Mat predictMask(Mat input) throws IOException {
+        Mat floats = new Mat(), scalar = input.reshape(1);
+        Mat blob = null, prediction = null, flat = null;
+        List<Mat> channels = new ArrayList<>();
+        try {
+            if (network == null) {
+                network = Dnn.readNetFromONNX(modelFile().getAbsolutePath());
+                network.setPreferableBackend(Dnn.DNN_BACKEND_OPENCV);
+                network.setPreferableTarget(Dnn.DNN_TARGET_CPU);
+            }
+            double peak = Math.max(1, Core.minMaxLoc(scalar).maxVal);
+            input.convertTo(floats, CvType.CV_32FC3, 1 / peak);
+            Core.split(floats, channels);
+            double[] means = {.485, .456, .406}, deviations = {.229, .224, .225};
+            for (int i = 0; i < 3; i++) {
+                Core.subtract(channels.get(i), new Scalar(means[i]), channels.get(i));
+                Core.multiply(channels.get(i), new Scalar(1 / deviations[i]), channels.get(i));
+            }
+            Core.merge(channels, floats);
+            blob = Dnn.blobFromImage(floats);
+            network.setInput(blob);
+            prediction = network.forward(network.getUnconnectedOutLayersNames().get(0));
+            flat = prediction.reshape(1, MASK_SIZE);
+            Core.MinMaxLocResult range = Core.minMaxLoc(flat);
+            double spread = range.maxVal - range.minVal;
+            if (!Double.isFinite(spread) || spread < 1e-6) {
+                throw new MaskFallbackException("El recorte automático no encontró un objeto claro.");
+            }
+            Mat output = new Mat();
+            try {
+                flat.convertTo(output, CvType.CV_32F, 1 / spread, -range.minVal / spread);
+                return output;
+            } catch (RuntimeException error) {
+                output.release();
+                throw error;
+            }
+        } finally {
+            scalar.release();
+            floats.release();
+            release(channels);
+            if (blob != null) blob.release();
+            if (flat != null) flat.release();
+            if (prediction != null) prediction.release();
+        }
+    }
+
+    private Mat finishMask(Mat source, boolean automatic) throws MaskFallbackException {
+        Mat soft = source.clone(), result = new Mat();
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(3, 3));
+        try {
+            if (automatic) keepForegroundComponents(soft);
+            Imgproc.dilate(soft, soft, kernel);
+            Imgproc.resize(soft, result, original.size(), 0, 0, Imgproc.INTER_LINEAR);
+            Imgproc.GaussianBlur(result, result, new Size(0, 0), 1.1);
+            Core.min(result, new Scalar(1), result);
+            Core.max(result, new Scalar(0), result);
+            double coverage = Core.mean(result).val[0];
+            if (!Double.isFinite(coverage) || coverage == 0 || (automatic && MaskCoverage.needsGuidance(coverage))) {
+                throw new MaskFallbackException("El recorte no quedó claro. Toca el objeto para ayudarnos.");
+            }
+            return result;
+        } catch (MaskFallbackException | RuntimeException error) {
+            result.release();
+            throw error;
+        } finally {
+            soft.release();
+            kernel.release();
+        }
+    }
+
+    private static void keepForegroundComponents(Mat soft) {
+        Mat binary = new Mat(), labels = new Mat(), stats = new Mat(), centroids = new Mat();
+        Mat keep = Mat.zeros(soft.size(), CvType.CV_8U), component = new Mat();
+        try {
+            Core.compare(soft, new Scalar(.35), binary, Core.CMP_GT);
+            int count = Imgproc.connectedComponentsWithStats(binary, labels, stats, centroids, 8, CvType.CV_32S);
+            int largest = 0;
+            for (int i = 1; i < count; i++) largest = Math.max(largest, (int) stats.get(i, Imgproc.CC_STAT_AREA)[0]);
+            int minimum = Math.min(largest, Math.max(24, Math.round(largest * .005f)));
+            for (int i = 1; i < count; i++) {
+                if (stats.get(i, Imgproc.CC_STAT_AREA)[0] < minimum) continue;
+                Core.compare(labels, new Scalar(i), component, Core.CMP_EQ);
+                Core.bitwise_or(keep, component, keep);
+            }
+            keep.convertTo(keep, CvType.CV_32F, 1 / 255.0);
+            Core.multiply(soft, keep, soft);
+        } finally {
+            binary.release();
+            labels.release();
+            stats.release();
+            centroids.release();
+            keep.release();
+            component.release();
+        }
+    }
     /** U2NetP saliency may ignore a second cup. Colour refinement keeps the complete still life. */
     private static void completeObjects(Mat rgb,Mat soft){
         Mat labels=new Mat(rgb.size(),CvType.CV_8U,new Scalar(Imgproc.GC_PR_BGD)),background=new Mat(),foreground=new Mat(),sure=new Mat(),keep=new Mat(),other=new Mat(),refined=new Mat();
@@ -159,8 +263,6 @@ final class FoodPhotoEngine implements AutoCloseable {
         try{
             Core.compare(soft,new Scalar(.78),sureFront,Core.CMP_GT);labels.setTo(new Scalar(Imgproc.GC_FGD),sureFront);
             Core.compare(soft,new Scalar(.32),sureBack,Core.CMP_LT);labels.setTo(new Scalar(Imgproc.GC_BGD),sureBack);
-            int band=Math.max(4,Math.round(Math.min(rgb.cols(),rgb.rows())*.08f));
-            for(int[] rect:new int[][]{{0,0,band,rgb.rows()},{rgb.cols()-band,0,band,rgb.rows()},{0,0,rgb.cols(),band},{0,rgb.rows()-band,rgb.cols(),band}}){Mat edge=labels.submat(new org.opencv.core.Rect(rect[0],rect[1],rect[2],rect[3]));try{edge.setTo(new Scalar(Imgproc.GC_BGD));}finally{edge.release();}}
             Imgproc.grabCut(rgb,labels,new org.opencv.core.Rect(),background,foreground,5,Imgproc.GC_INIT_WITH_MASK);
             Core.compare(labels,new Scalar(Imgproc.GC_FGD),keep,Core.CMP_EQ);Core.compare(labels,new Scalar(Imgproc.GC_PR_FGD),other,Core.CMP_EQ);Core.bitwise_or(keep,other,keep);keep.convertTo(refined,CvType.CV_32F,1/255.0);
             Core.multiply(soft,refined,soft);

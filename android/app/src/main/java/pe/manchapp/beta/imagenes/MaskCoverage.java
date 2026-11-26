@@ -2,5 +2,7 @@ package pe.manchapp.beta;
 
 final class MaskCoverage {
     private MaskCoverage(){}
-    static boolean tooBroad(double coverage){return Double.isNaN(coverage)||coverage>.90||coverage<.02;}
+    static boolean needsGuidance(double coverage) {
+        return !Double.isFinite(coverage) || coverage < .005 || coverage > .985;
+    }
 }

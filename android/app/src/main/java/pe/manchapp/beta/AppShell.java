@@ -528,6 +528,7 @@ final class AppShell {
             root = column();
             root.setBackgroundColor(NativeUi.BG);
             activity.setContentView(root);
+            PhotoUi.applySystemBarPadding(root, dp(8));
             root.addView(ui.toolbar(isRoot() ? "ManchApp" : screenTitle(),
                     isRoot() ? "EMPRENDEDORA · " + data().optJSONObject("settings").optString("name") : "",
                     (isRoot() || (onboarding && !screen.equals("qr"))) ? null : () -> activity.onBackPressed(),

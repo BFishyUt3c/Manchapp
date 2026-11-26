@@ -18,7 +18,7 @@ public final class PhotoStudioActivity extends Activity {
     private JSONObject photo=new JSONObject();
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private Bitmap preview;
-    private boolean busy=false,editorSourceReady=false;
+    private boolean busy=false;
     static File workspace(Context context){return new File(context.getFilesDir(),"photo-studio.json");}
     static JSONObject read(Context context)throws Exception{return new JSONObject(SafeJson.read(new CrossFile(workspace(context)).openRead()));}
     @Override public void onCreate(Bundle state){super.onCreate(state);ui=new PhotoUi(this);getWindow().getDecorView().setSystemUiVisibility(0);getWindow().setStatusBarColor(PhotoUi.BG);getWindow().setNavigationBarColor(PhotoUi.PANEL);
@@ -50,15 +50,49 @@ public final class PhotoStudioActivity extends Activity {
         if(camera){new File(getCacheDir(),"shared").mkdirs();Uri uri=Uri.parse("content://pe.manchapp.beta.files/studio-camera.jpg");Intent intent=new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT,uri);intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_READ_URI_PERMISSION);intent.setClipData(ClipData.newRawUri("Foto",uri));startActivityForResult(intent,41);}
         else{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(intent,42);}
     }catch(Exception error){toast("No pudimos abrir la cámara o la galería.");}}
-    private void edit(){if(busy||photo.optString("image").isEmpty())return;if(!photo.optString("compositionId").isEmpty()){startActivityForResult(new Intent(this,PhotoComposeActivity.class).putExtra("compositionId",photo.optString("compositionId")),84);return;}if(editorSourceReady){editorSourceReady=false;busy=true;draw();runOnUiThread(()->{busy=false;draw();if(!isFinishing()&&!isDestroyed())startActivityForResult(new Intent(this,PhotoEditorActivity.class).putExtra("includeObjects",false),84);});return;}busy=true;draw();final String encoded=photo.optString("image");worker.execute(()->{Bitmap bitmap=null;try{
-        bitmap=ImageTools.decode(encoded);if(bitmap==null)throw new IOException();try(OutputStream out=new FileOutputStream(PhotoEditorActivity.input(this))){if(!bitmap.compress(ImageTools.hasTransparency(bitmap)?Bitmap.CompressFormat.PNG:Bitmap.CompressFormat.JPEG,95,out))throw new IOException();}
-        runOnUiThread(()->{busy=false;draw();if(!isFinishing()&&!isDestroyed())startActivityForResult(new Intent(this,PhotoEditorActivity.class).putExtra("includeObjects",false),84);});
-    }catch(Exception|OutOfMemoryError error){runOnUiThread(()->{busy=false;draw();toast("No pudimos abrir esa foto. La imagen anterior sigue guardada.");});}finally{if(bitmap!=null)bitmap.recycle();}});}
+    private void edit() {
+        if (busy || photo.optString("image").isEmpty()) return;
+        String compositionId = photo.optString("compositionId");
+        if (!compositionId.isEmpty()) {
+            openComposition(compositionId);
+            return;
+        }
+        String encoded = photo.optString("image");
+        busy = true;
+        draw();
+        worker.execute(() -> {
+            Bitmap bitmap = null;
+            try {
+                bitmap = ImageTools.decode(encoded);
+                if (bitmap == null) throw new IOException();
+                String id = CompositionDocument.create(this, bitmap).id();
+                runOnUiThread(() -> {
+                    busy = false;
+                    draw();
+                    openComposition(id);
+                });
+            } catch (Exception | OutOfMemoryError error) {
+                runOnUiThread(() -> {
+                    busy = false;
+                    draw();
+                    toast("No pudimos abrir esa foto. La imagen anterior sigue guardada.");
+                });
+            } finally {
+                if (bitmap != null) bitmap.recycle();
+            }
+        });
+    }
+
+    private void openComposition(String id) {
+        if (!isFinishing() && !isDestroyed()) {
+            startActivityForResult(new Intent(this, PhotoComposeActivity.class).putExtra("compositionId", id), 84);
+        }
+    }
     private void exportPhoto(){if(busy)return;try{startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/png").putExtra(Intent.EXTRA_TITLE,"ManchApp-foto.png"),86);}catch(Exception error){toast("No pudimos abrir dónde guardar la foto.");}}
     @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(result!=RESULT_OK)return;
         if(request==86){if(data==null||data.getData()==null)return;final Uri uri=data.getData();final String encoded=photo.optString("image");busy=true;draw();worker.execute(()->{Bitmap bitmap=null;try{bitmap=ImageTools.decode(encoded);if(bitmap==null)throw new IOException();try(OutputStream out=getContentResolver().openOutputStream(uri)){if(out==null||!bitmap.compress(Bitmap.CompressFormat.PNG,100,out))throw new IOException();}runOnUiThread(()->toast("Foto guardada en el lugar que elegiste."));}catch(Exception|OutOfMemoryError error){runOnUiThread(()->toast("No pudimos exportarla. Tu foto sigue aquí para volver a intentar."));}finally{if(bitmap!=null)bitmap.recycle();runOnUiThread(()->{busy=false;draw();});}});return;}
         if(request!=41&&request!=42&&request!=84)return;final Uri uri=request==41?Uri.parse("content://pe.manchapp.beta.files/studio-camera.jpg"):data==null?null:data.getData();if(request!=84&&uri==null)return;final JSONObject previous=LocalStore.copy(photo);final String compositionId=data==null?"":data.getStringExtra("compositionId");busy=true;draw();worker.execute(()->{Bitmap bitmap=null;try{
-            String encoded;if(request==84)encoded=SafeJson.read(new FileInputStream(PhotoEditorActivity.output(this)));else{bitmap=ImageTools.read(this,uri,1280);encoded=ImageTools.encodeEdited(bitmap);try(OutputStream out=new FileOutputStream(PhotoEditorActivity.input(this))){if(!bitmap.compress(ImageTools.hasTransparency(bitmap)?Bitmap.CompressFormat.PNG:Bitmap.CompressFormat.JPEG,92,out))throw new IOException();}editorSourceReady=true;}
+            String encoded;if(request==84)encoded=SafeJson.read(new FileInputStream(PhotoEditorActivity.output(this)));else{bitmap=ImageTools.read(this,uri,1280);encoded=ImageTools.encodeEdited(bitmap);}
             JSONObject next=request==84?previous.put("image",encoded):new JSONObject().put("source",encoded).put("image",encoded);if(request==84&&compositionId!=null&&!compositionId.isEmpty())next.put("compositionId",compositionId);else next.remove("compositionId");persist(next);
             runOnUiThread(()->{photo=next;busy=false;draw();if(request!=84&&!isFinishing()&&!isDestroyed())edit();});
         }catch(Exception|OutOfMemoryError error){runOnUiThread(()->{busy=false;draw();toast("No pudimos preparar esa foto. Prueba una imagen más pequeña.");});}finally{if(bitmap!=null)bitmap.recycle();}});

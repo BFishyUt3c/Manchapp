@@ -115,6 +115,56 @@ public class CompositionFlowTest {
         }
     }
     @Test public void compositionBindingDoesNotReopenStaleImage()throws Exception{String image=ImageTools.encodeEdited(product);CompositionDocument doc=CompositionDocument.create(context,product,back);PhotoOriginals.linkComposition(context,"product-test",image,doc.id());assertEquals(doc.id(),PhotoOriginals.composition(context,"product-test",image));assertEquals("",PhotoOriginals.composition(context,"product-test",image+"changed"));}
+    @Test public void croppingOneLayerKeepsItsPositionAndProvidesAReferenceForTheBrush() throws Exception {
+        CompositionDocument scene = CompositionDocument.create(context, product);
+        String id = scene.layers().getJSONObject(0).getString("id");
+        scene.pan(id, .2f, -.1f);
+        scene.zoom(id, 1.4f);
+        scene.save();
+        Intent sceneIntent = new Intent(context, PhotoComposeActivity.class).putExtra("compositionId", scene.id());
+        try (ActivityController<PhotoComposeActivity> parent =
+                     Robolectric.buildActivity(PhotoComposeActivity.class, sceneIntent).setup().visible()) {
+            PhotoComposeActivity composition = parent.get();
+            View root = (View) field(composition, "root");
+            assertTrue(root.findViewWithTag("compose:background").isEnabled());
+            assertTrue(root.findViewWithTag("compose:add").isEnabled());
+            assertTrue(root.findViewWithTag("compose:edit").performClick());
+            Intent editIntent = Shadows.shadowOf(composition).getNextStartedActivityForResult().intent;
+            assertEquals(PhotoEditorActivity.class.getName(), editIntent.getComponent().getClassName());
+            Intent result;
+            try (ActivityController<PhotoEditorActivity> child =
+                         Robolectric.buildActivity(PhotoEditorActivity.class, editIntent).setup().visible()) {
+                PhotoEditorActivity editor = child.get();
+                waitIdle(editor);
+                ((RectF) field(editor, "crop")).set(.1f, .1f, .9f, .9f);
+                call(editor, "requestRender", new Class<?>[0]);
+                waitIdle(editor);
+                assertTrue(((View) field(editor, "root")).findViewWithTag("editor:save").performClick());
+                long deadline = System.currentTimeMillis() + 10000;
+                while (!editor.isFinishing() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(20);
+                    ShadowLooper.idleMainLooper();
+                }
+                assertTrue(editor.isFinishing());
+                result = Shadows.shadowOf(editor).getResultIntent();
+                assertNotNull(result);
+            }
+            call(composition, "onActivityResult", new Class<?>[]{int.class, int.class, Intent.class},
+                    74, Activity.RESULT_OK, result);
+            waitIdle(composition);
+            CompositionDocument updated = CompositionDocument.open(context, scene.id());
+            JSONObject edited = updated.layer(id);
+            JSONObject previous = scene.layer(id);
+            for (String key : new String[]{"x", "y", "scale"}) {
+                assertEquals(previous.getDouble(key), edited.getDouble(key), 0);
+            }
+            assertEquals(80, updated.bitmap(edited.getString("file")).getWidth());
+            assertEquals(80, updated.bitmap(edited.getString("source")).getWidth());
+            updated.close();
+        } finally {
+            scene.close();
+        }
+    }
     @Test public void studioReopensEditableCompositionInsteadOfFlattenedEditor()throws Exception{
         CompositionDocument doc=CompositionDocument.create(context,product,back);String source=ImageTools.encodeEdited(product);try(OutputStream out=new FileOutputStream(PhotoStudioActivity.workspace(context))){out.write(new JSONObject().put("source",source).put("image",source).toString().getBytes("UTF-8"));}Bitmap image=doc.export();String encoded=ImageTools.encodeEdited(image);image.recycle();try(OutputStream out=new FileOutputStream(PhotoEditorActivity.output(context))){out.write(encoded.getBytes("UTF-8"));}
         try(ActivityController<PhotoStudioActivity> controller=Robolectric.buildActivity(PhotoStudioActivity.class).setup().visible()){PhotoStudioActivity activity=controller.get();call(activity,"onActivityResult",new Class<?>[]{int.class,int.class,Intent.class},84,Activity.RESULT_OK,new Intent().putExtra("compositionId",doc.id()));waitIdle(activity);assertEquals(doc.id(),PhotoStudioActivity.read(context).getString("compositionId"));}

@@ -33,14 +33,17 @@ public final class PhotoEditorActivity extends Activity {
     private final List<Bitmap> swatches=new ArrayList<>();
     private Dialog cropDialog,guidedDialog;
     private float guidedX=.5f,guidedY=.5f;
+    private String layerId;
     static File input(android.content.Context context){return new File(context.getCacheDir(),"photo-editor-source.jpg");}
     static File output(android.content.Context context){return new File(context.getCacheDir(),"photo-editor-result.txt");}
 
     @Override public void onCreate(Bundle state){
         super.onCreate(state);ui=new PhotoUi(this);includeObjects=getIntent().getBooleanExtra("includeObjects",false);
+        layerId = getIntent().getStringExtra("layerId");
+        File source = layerId == null ? input(this) : new File(getIntent().getStringExtra("layerFile"));
         if(state!=null){manualSession=state.getString("manualSession","");includeObjects=state.getBoolean("includeObjects",includeObjects);improve=state.getBoolean("improve",true);intensity=state.getInt("intensity",100);background=state.getString("background","original");angledBackground=state.getBoolean("angledBackground",true);tool=state.getString("tool","adjust");showOriginal=state.getBoolean("showOriginal",false);float[] bounds=state.getFloatArray("crop");if(bounds!=null&&bounds.length==4)crop.set(bounds[0],bounds[1],bounds[2],bounds[3]);}
         getWindow().getDecorView().setSystemUiVisibility(0);getWindow().setStatusBarColor(PhotoUi.BG);getWindow().setNavigationBarColor(PhotoUi.PANEL);draw();
-        worker.execute(()->{try{original=ImageTools.decodeFile(input(this),1280);sourceTransparent=ImageTools.hasTransparency(original);engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){Toast.makeText(this,"No pudimos abrir esta foto. La imagen anterior se conserva.",Toast.LENGTH_LONG).show();finish();}});}});
+        worker.execute(()->{try{original=ImageTools.decodeFile(source,1280);sourceTransparent=ImageTools.hasTransparency(original);engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){Toast.makeText(this,"No pudimos abrir esta foto. La imagen anterior se conserva.",Toast.LENGTH_LONG).show();finish();}});}});
     }
     private void draw(){
         root=ui.column();root.setBackgroundColor(PhotoUi.BG);setContentView(root);ui.insets(root);
@@ -69,10 +72,11 @@ public final class PhotoEditorActivity extends Activity {
         HorizontalScrollView horizontal = new HorizontalScrollView(this);
         horizontal.setHorizontalScrollBarEnabled(false);
         LinearLayout row = new LinearLayout(this);
-        String[] ids = {"original", "wood", "marble", "cloth", "custom", "blur", "transparent"};
-        String[] labels = {"Original", "Madera", "Mármol", "Lino", "Mi fondo", "Desenfocar", "Sin fondo"};
+        String[] ids = {"custom", "original", "wood", "marble", "cloth", "blur", "transparent"};
+        String[] labels = {"Mi fondo", "Original", "Madera", "Mármol", "Lino", "Desenfocar", "Sin fondo"};
         for (int i = 0; i < ids.length; i++) {
             String id = ids[i];
+            if (layerId != null && id.equals("custom")) continue;
             LinearLayout choice = ui.column();
             choice.setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4));
             choice.setGravity(Gravity.CENTER);
@@ -264,7 +268,62 @@ public final class PhotoEditorActivity extends Activity {
     private void enabled(boolean value){save.setEnabled(value);save.setAlpha(value?1:.4f);enableChildren(toolBody,value);if(undoCrop!=null){undoCrop.setEnabled(value&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);}for(TextView comparison:comparisons.values())comparison.setEnabled(value);View slider=findSeekBar(toolPanels.get("adjust"));if(slider!=null)slider.setEnabled(value&&improve);}
     private View findSeekBar(View root){if(root instanceof SeekBar)return root;if(root instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)root;for(int i=0;i<group.getChildCount();i++){View found=findSeekBar(group.getChildAt(i));if(found!=null)return found;}}return null;}
     private void enableChildren(android.view.ViewGroup group,boolean value){for(int i=0;i<group.getChildCount();i++){View child=group.getChildAt(i);child.setEnabled(value);if(child instanceof android.view.ViewGroup)enableChildren((android.view.ViewGroup)child,value);}}
-    private void save(){if(busy)return;final Bitmap chosen=result==null?(comparison==null?original:comparison):result;if(chosen==null)return;busy=true;enabled(false);progress.setText("Guardando foto…");worker.execute(()->{android.util.AtomicFile file=new CrossFile(output(this));FileOutputStream out=null;try{String encoded=ImageTools.encodeEdited(chosen);out=file.startWrite();out.write(encoded.getBytes("UTF-8"));file.finishWrite(out);runOnUiThread(()->{if(!destroyed){setResult(RESULT_OK);finish();}});}catch(Exception|OutOfMemoryError error){if(out!=null)file.failWrite(out);runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos guardar. Tu foto sigue abierta.");}});}});}
+    private void save() {
+        if (busy) return;
+        Bitmap chosen = result == null ? (comparison == null ? original : comparison) : result;
+        if (chosen == null) return;
+        busy = true;
+        enabled(false);
+        progress.setText("Guardando foto…");
+        RectF bounds = new RectF(crop);
+        worker.execute(() -> {
+            try {
+                Intent reply = null;
+                if (layerId == null) {
+                    android.util.AtomicFile file = new CrossFile(output(this));
+                    FileOutputStream out = null;
+                    try {
+                        String encoded = ImageTools.encodeEdited(chosen);
+                        out = file.startWrite();
+                        out.write(encoded.getBytes("UTF-8"));
+                        file.finishWrite(out);
+                    } catch (Exception | OutOfMemoryError error) {
+                        if (out != null) file.failWrite(out);
+                        throw error;
+                    }
+                } else {
+                    reply = saveLayer(chosen, bounds);
+                }
+                Intent saved = reply;
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    setResult(RESULT_OK, saved);
+                    finish();
+                });
+            } catch (Exception | OutOfMemoryError error) {
+                runOnUiThread(() -> {
+                    if (destroyed) return;
+                    busy = false;
+                    enabled(true);
+                    progress.setText("No pudimos guardar. Tu foto sigue abierta.");
+                });
+            }
+        });
+    }
+
+    private Intent saveLayer(Bitmap edited, RectF bounds) throws Exception {
+        File file = new File(getIntent().getStringExtra("layerSource"));
+        Bitmap source = ImageTools.decodeFile(file, 1280);
+        Bitmap framed = null;
+        try {
+            framed = PhotoCropView.apply(source, bounds);
+            MaskEditSession session = MaskEditSession.create(this, framed, edited);
+            return new Intent().putExtra("layerId", layerId).putExtra("maskSessionId", session.id());
+        } finally {
+            if (framed != null && framed != source) framed.recycle();
+            source.recycle();
+        }
+    }
     @Override public void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("manualSession",manualSession);state.putBoolean("includeObjects",includeObjects);state.putBoolean("improve",improve);state.putInt("intensity",intensity);state.putString("tool",tool);state.putBoolean("showOriginal",showOriginal);state.putString("background",background);state.putBoolean("angledBackground",angledBackground);state.putFloatArray("crop",new float[]{crop.left,crop.top,crop.right,crop.bottom});}
     @Override public void onDestroy(){destroyed=true;if(cropDialog!=null)cropDialog.dismiss();if(guidedDialog!=null)guidedDialog.dismiss();preview.setImageDrawable(null);for(Bitmap swatch:swatches)swatch.recycle();worker.execute(()->{if(engine!=null)engine.close();if(comparison!=null&&comparison!=original&&!comparison.isRecycled())comparison.recycle();if(original!=null&&!original.isRecycled())original.recycle();if(result!=null&&result!=original&&!result.isRecycled())result.recycle();});worker.shutdown();super.onDestroy();}
 }

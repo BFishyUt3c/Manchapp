@@ -19,16 +19,23 @@ final class PhotoUi {
     TextView button(String label,boolean primary,Runnable action){TextView view=text(label,14,primary?TEXT:LIGHT,true);view.setGravity(Gravity.CENTER);view.setMinHeight(dp(48));view.setPadding(dp(14),dp(10),dp(14),dp(10));StateListDrawable states=new StateListDrawable();states.addState(new int[]{android.R.attr.state_pressed},background(primary?0xff7f2442:SURFACE,0,12));states.addState(new int[]{},background(primary?ACCENT:Color.TRANSPARENT,primary?0:LINE,12));view.setBackground(states);view.setOnClickListener(v->action.run());role(view);return view;}
     TextView icon(String name,String label,Runnable action){TextView view=text("",14,TEXT,false);view.setGravity(Gravity.CENTER);view.setCompoundDrawablesWithIntrinsicBounds(new NativeUi.Icon(name,TEXT,dp(23)),null,null,null);view.setPadding(dp(12),dp(12),dp(12),dp(12));view.setMinHeight(dp(48));view.setMinWidth(dp(48));view.setContentDescription(label);view.setOnClickListener(v->action.run());role(view);return view;}
     LinearLayout header(String title,View back,View action){LinearLayout bar=new LinearLayout(context);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(4),dp(4),dp(12),dp(4));bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(48)));TextView heading=text(title,20,TEXT,true);bar.addView(heading,new LinearLayout.LayoutParams(0,-2,1));if(action!=null)bar.addView(action,new LinearLayout.LayoutParams(-2,dp(48)));return bar;}
-    /** targetSdk 35 enables edge-to-edge on Android 15+: keep content out of system bars. */
     void insets(View view){
+        applySystemBarPadding(view, dp(8));
+    }
+    static void applySystemBarPadding(View view, int bottomGap) {
         int left=view.getPaddingLeft(),right=view.getPaddingRight(),top=view.getPaddingTop(),bottom=view.getPaddingBottom();
+        view.setPadding(left, top, right, bottom + bottomGap);
         view.setOnApplyWindowInsetsListener((v,in)->{
-            int status,nav;
-            if(android.os.Build.VERSION.SDK_INT>=30){status=in.getInsets(WindowInsets.Type.statusBars()).top;nav=in.getInsets(WindowInsets.Type.navigationBars()).bottom;}
-            else{status=in.getSystemWindowInsetTop();nav=in.getSystemWindowInsetBottom();}
-            v.setPadding(left,top+Math.max(0,status),right,bottom+Math.max(0,nav));
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                Insets bars = in.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                v.setPadding(left + bars.left, top + bars.top, right + bars.right, bottom + bars.bottom + bottomGap);
+            } else {
+                v.setPadding(left + in.getSystemWindowInsetLeft(), top + in.getSystemWindowInsetTop(),
+                        right + in.getSystemWindowInsetRight(), bottom + in.getSystemWindowInsetBottom() + bottomGap);
+            }
             return in;
         });
+        view.requestApplyInsets();
     }
     void add(LinearLayout parent,View child,int gap){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.topMargin=dp(gap);parent.addView(child,params);}
     void weighted(LinearLayout row,View view,boolean last){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,-2,1);params.rightMargin=last?0:dp(8);row.addView(view,params);}
