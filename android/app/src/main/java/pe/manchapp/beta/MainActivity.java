@@ -62,6 +62,7 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(0);
         getWindow().setStatusBarColor(NativeUi.DEEP);
         getWindow().setNavigationBarColor(NativeUi.WINE);
+        if (android.os.Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
         shell.render();
     }
 

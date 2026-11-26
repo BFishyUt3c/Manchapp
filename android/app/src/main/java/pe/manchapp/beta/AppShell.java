@@ -528,7 +528,6 @@ final class AppShell {
             root = column();
             root.setBackgroundColor(NativeUi.BG);
             activity.setContentView(root);
-            PhotoUi.applySystemBarPadding(root, dp(8));
             root.addView(ui.toolbar(isRoot() ? "ManchApp" : screenTitle(),
                     isRoot() ? "EMPRENDEDORA · " + data().optJSONObject("settings").optString("name") : "",
                     (isRoot() || (onboarding && !screen.equals("qr"))) ? null : () -> activity.onBackPressed(),
@@ -594,9 +593,13 @@ final class AppShell {
                     break;
             }
             if (!onboarding) {
-                root.addView(ui.navigation(new String[]{"home", "publications", "products", "orders"},
+                LinearLayout navigation = ui.navigation(new String[]{"home", "publications", "products", "orders"},
                         new String[]{"Inicio", "Imágenes", "Productos", "Ventas"},
-                        new String[]{"home", "photo", "food", "orders"}, destination(), this::changeTab));
+                        new String[]{"home", "photo", "food", "orders"}, destination(), this::changeTab);
+                root.addView(navigation);
+                PhotoUi.applySystemBarPadding(root, navigation, dp(8));
+            } else {
+                PhotoUi.applySystemBarPadding(root, root, dp(8));
             }
         } finally {
             renderState = null;

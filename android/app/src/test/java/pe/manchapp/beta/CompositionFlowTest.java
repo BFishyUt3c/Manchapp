@@ -128,6 +128,16 @@ public class CompositionFlowTest {
             View root = (View) field(composition, "root");
             assertTrue(root.findViewWithTag("compose:background").isEnabled());
             assertTrue(root.findViewWithTag("compose:add").isEnabled());
+            assertTrue(root.findViewWithTag("layer:background").performClick());
+            assertFalse(root.findViewWithTag("compose:edit").isShown());
+            assertFalse(root.findViewWithTag("compose:mask").isShown());
+            assertTrue(root.findViewWithTag("compose:format").performClick());
+            AlertDialog format = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+            assertEquals(0, format.getListView().getCheckedItemPosition());
+            assertTrue(format.getListView().performItemClick(null, 3, 3));
+            assertEquals("story", ((CompositionDocument) field(composition, "document")).state.getString("format"));
+            assertTrue(root.findViewWithTag("layer:" + id).performClick());
+            assertTrue(root.findViewWithTag("compose:edit").isShown());
             assertTrue(root.findViewWithTag("compose:edit").performClick());
             Intent editIntent = Shadows.shadowOf(composition).getNextStartedActivityForResult().intent;
             assertEquals(PhotoEditorActivity.class.getName(), editIntent.getComponent().getClassName());

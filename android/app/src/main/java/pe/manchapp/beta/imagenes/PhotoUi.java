@@ -20,22 +20,35 @@ final class PhotoUi {
     TextView icon(String name,String label,Runnable action){TextView view=text("",14,TEXT,false);view.setGravity(Gravity.CENTER);view.setCompoundDrawablesWithIntrinsicBounds(new NativeUi.Icon(name,TEXT,dp(23)),null,null,null);view.setPadding(dp(12),dp(12),dp(12),dp(12));view.setMinHeight(dp(48));view.setMinWidth(dp(48));view.setContentDescription(label);view.setOnClickListener(v->action.run());role(view);return view;}
     LinearLayout header(String title,View back,View action){LinearLayout bar=new LinearLayout(context);bar.setGravity(Gravity.CENTER_VERTICAL);bar.setPadding(dp(4),dp(4),dp(12),dp(4));bar.addView(back,new LinearLayout.LayoutParams(dp(48),dp(48)));TextView heading=text(title,20,TEXT,true);bar.addView(heading,new LinearLayout.LayoutParams(0,-2,1));if(action!=null)bar.addView(action,new LinearLayout.LayoutParams(-2,dp(48)));return bar;}
     void insets(View view){
-        applySystemBarPadding(view, dp(8));
+        applySystemBarPadding(view, view, dp(8));
     }
-    static void applySystemBarPadding(View view, int bottomGap) {
+    static void applySystemBarPadding(View view, View bottomArea, int bottomGap) {
         int left=view.getPaddingLeft(),right=view.getPaddingRight(),top=view.getPaddingTop(),bottom=view.getPaddingBottom();
-        view.setPadding(left, top, right, bottom + bottomGap);
+        int areaBottom = bottomArea.getPaddingBottom();
+        setBottomPadding(bottomArea, areaBottom + bottomGap);
         view.setOnApplyWindowInsetsListener((v,in)->{
+            int barLeft, barTop, barRight, barBottom;
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 Insets bars = in.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-                v.setPadding(left + bars.left, top + bars.top, right + bars.right, bottom + bars.bottom + bottomGap);
+                barLeft = bars.left;
+                barTop = bars.top;
+                barRight = bars.right;
+                barBottom = bars.bottom;
             } else {
-                v.setPadding(left + in.getSystemWindowInsetLeft(), top + in.getSystemWindowInsetTop(),
-                        right + in.getSystemWindowInsetRight(), bottom + in.getSystemWindowInsetBottom() + bottomGap);
+                barLeft = in.getSystemWindowInsetLeft();
+                barTop = in.getSystemWindowInsetTop();
+                barRight = in.getSystemWindowInsetRight();
+                barBottom = in.getSystemWindowInsetBottom();
             }
+            int safeBottom = areaBottom + barBottom + bottomGap;
+            v.setPadding(left + barLeft, top + barTop, right + barRight, v == bottomArea ? safeBottom : bottom);
+            if (v != bottomArea) setBottomPadding(bottomArea, safeBottom);
             return in;
         });
         view.requestApplyInsets();
+    }
+    private static void setBottomPadding(View view, int bottom) {
+        view.setPadding(view.getPaddingLeft(), view.getPaddingTop(), view.getPaddingRight(), bottom);
     }
     void add(LinearLayout parent,View child,int gap){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.topMargin=dp(gap);parent.addView(child,params);}
     void weighted(LinearLayout row,View view,boolean last){LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,-2,1);params.rightMargin=last?0:dp(8);row.addView(view,params);}
