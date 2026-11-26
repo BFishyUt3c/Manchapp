@@ -17,7 +17,7 @@ final class CompositionDocument {
     }
     static CompositionDocument create(Context context,Bitmap product,Bitmap background,Bitmap source)throws Exception{
         CompositionDocument doc=new CompositionDocument(context,UUID.randomUUID().toString());if(!doc.directory.mkdirs())throw new IOException("No pudimos preparar la composición.");
-        String back=doc.asset(background,"background");doc.state=new JSONObject().put("format","background").put("width",background.getWidth()).put("height",background.getHeight()).put("background",back).put("bgFit","cover").put("bgScale",1).put("bgX",0).put("bgY",0).put("layers",new JSONArray());doc.layers().put(doc.prepareProduct(product,source));doc.save();return doc;
+        String back=doc.asset(background,"background");doc.state=new JSONObject().put("format","background").put("width",background.getWidth()).put("height",background.getHeight()).put("background",back).put("bgFit","cover").put("contactShadow",true).put("bgScale",1).put("bgX",0).put("bgY",0).put("layers",new JSONArray());doc.layers().put(doc.prepareProduct(product,source));doc.save();return doc;
     }
     static CompositionDocument open(Context context,String id)throws Exception{CompositionDocument doc=new CompositionDocument(context,id);doc.state=new JSONObject(SafeJson.read(new CrossFile(new File(doc.directory,"scene.json")).openRead()));if(doc.state.optJSONArray("layers")==null||doc.state.optInt("width")<1||doc.state.optInt("height")<1)throw new IOException("No pudimos recuperar la composición.");return doc;}
     String id(){return directory.getName();}
@@ -44,7 +44,25 @@ final class CompositionDocument {
     void pan(String selected,float dx,float dy)throws Exception{if(selected.equals("background")){Bitmap bitmap=bitmap(state.getString("background"));boolean stretch=state.optString("bgFit","cover").equals("stretch");float factor=stretch?1:backgroundFactor(bitmap),maxX=stretch?0:Math.max(0,(bitmap.getWidth()*factor-width())/(2*width())),maxY=stretch?0:Math.max(0,(bitmap.getHeight()*factor-height())/(2*height()));state.put("bgX",Math.max(-maxX,Math.min(maxX,state.optDouble("bgX")+dx))).put("bgY",Math.max(-maxY,Math.min(maxY,state.optDouble("bgY")+dy)));}else{JSONObject layer=layer(selected);if(layer!=null)layer.put("x",Math.max(.05,Math.min(.95,layer.optDouble("x")+dx))).put("y",Math.max(.05,Math.min(.95,layer.optDouble("y")+dy)));}}
     void zoom(String selected,float factor)throws Exception{if(selected.equals("background")){state.put("bgScale",Math.max(1,Math.min(4,state.optDouble("bgScale",1)*factor)));pan(selected,0,0);}else{JSONObject layer=layer(selected);if(layer!=null)layer.put("scale",Math.max(.15,Math.min(3,layer.optDouble("scale",1)*factor)));}}
     void replaceBackground(Bitmap background)throws Exception{String name=asset(background,"background");state.put("background",name).put("width",background.getWidth()).put("height",background.getHeight()).put("bgScale",1).put("bgX",0).put("bgY",0);}
-    void draw(Canvas canvas)throws Exception{Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.FILTER_BITMAP_FLAG);canvas.drawColor(Color.WHITE);canvas.drawBitmap(bitmap(state.getString("background")),null,backgroundRect(),paint);JSONArray layers=layers();for(int i=0;i<layers.length();i++){JSONObject layer=layers.getJSONObject(i);canvas.drawBitmap(bitmap(layer.getString("file")),null,layerRect(layer),paint);}}
+    boolean contactShadow() {
+        return state.optBoolean("contactShadow", false);
+    }
+
+    void draw(Canvas canvas) throws Exception {
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawColor(Color.WHITE);
+        canvas.drawBitmap(bitmap(state.getString("background")), null, backgroundRect(), paint);
+        JSONArray layers = layers();
+        if (contactShadow()) {
+            for (int i = 0; i < layers.length(); i++) {
+                PhotoBackgrounds.drawContactShadow(canvas, selectionRect(layers.getJSONObject(i)), true);
+            }
+        }
+        for (int i = 0; i < layers.length(); i++) {
+            JSONObject layer = layers.getJSONObject(i);
+            canvas.drawBitmap(bitmap(layer.getString("file")), null, layerRect(layer), paint);
+        }
+    }
     Bitmap export()throws Exception{Bitmap output=Bitmap.createBitmap(width(),height(),Bitmap.Config.ARGB_8888);try{draw(new Canvas(output));return output;}catch(Exception|OutOfMemoryError error){output.recycle();throw error;}}
     void close(){bitmaps.evictAll();}
 }

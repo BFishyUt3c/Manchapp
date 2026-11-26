@@ -128,7 +128,7 @@ public class OwnerFlowTest {
     @Test public void orderAndPaymentFiltersAreIndependent() throws Exception {
         JSONObject order = new JSONObject().put("status", "registered").put("paid", false);
         assertTrue(OrderScreen.matchesFilters(order, "registered", "all"));
-        assertTrue(OrderScreen.matchesFilters(order, "active", "unpaid"));
+        assertFalse(OrderScreen.matchesFilters(order, "active", "unpaid"));
         assertFalse(OrderScreen.matchesFilters(order, "registered", "paid"));
         order.put("paid", true);
         assertTrue(OrderScreen.matchesFilters(order, "registered", "paid"));
@@ -138,6 +138,123 @@ public class OwnerFlowTest {
         order.put("status", "cancelled");
         assertTrue(OrderScreen.matchesFilters(order, "finished", "all"));
         assertFalse(OrderScreen.matchesFilters(order, "all", "unpaid"));
+    }
+
+    @Test public void normalDeviceOrderConfirmsAndRetriesWithoutReservingTwice() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        LocalStore store = new LocalStore(context, "owner-confirm-" + System.nanoTime() + ".json");
+        JSONObject product = store.snapshot().getJSONArray("products").getJSONObject(0);
+        int stock = product.getInt("stock");
+        long now = System.currentTimeMillis();
+        JSONObject request = OrderDraft.build(store.snapshot(), details(),
+                new JSONObject().put(product.getString("id"), stock), false, now);
+        JSONObject stale = LocalStore.copy(request);
+        stale.getJSONObject("expected").put("total", 0);
+        try {
+            store.receiveDeviceOrder(stale);
+            fail("Changed total must be reviewed");
+        } catch (IOException expected) {
+            assertEquals(stock, store.snapshot().getJSONArray("products").getJSONObject(0).getInt("stock"));
+        }
+        JSONObject accepted = store.receiveDeviceOrder(request);
+        assertEquals("confirmed", accepted.getString("status"));
+        assertFalse(accepted.getBoolean("paid"));
+        assertEquals(0, store.snapshot().getJSONArray("products").getJSONObject(0).getInt("stock"));
+        assertEquals(accepted.getString("id"), store.receiveDeviceOrder(request).getString("id"));
+        assertEquals(1, store.snapshot().getJSONArray("orders").length());
+    }
+
+    @Test public void cancellationOnlyRestoresStockForTheReservedSale() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        LocalStore store = new LocalStore(context, "owner-cancel-" + System.nanoTime() + ".json");
+        JSONObject product = store.snapshot().getJSONArray("products").getJSONObject(0);
+        JSONObject quantities = new JSONObject().put(product.getString("id"), 1);
+        int initialStock = product.getInt("stock");
+        JSONObject current = store.manualOrder(details(), quantities);
+        store.enqueue("order", OrderScreen.orderChange(current).put("status", "cancelled"));
+        assertEquals(initialStock, store.snapshot().getJSONArray("products").getJSONObject(0).getInt("stock"));
+
+        JSONObject old = store.manualOrder(details(), quantities);
+        JSONObject nextSale = LocalStore.copy(store.snapshot().getJSONArray("products").getJSONObject(0));
+        nextSale.put("saleDate", "2030-02-15").put("pickupFrom", "2030-02-15T16:00")
+                .put("pickupUntil", "2030-02-15T19:00").put("stock", 10);
+        store.enqueue("product", nextSale);
+        store.enqueue("order", OrderScreen.orderChange(old).put("status", "cancelled"));
+        assertEquals(10, store.snapshot().getJSONArray("products").getJSONObject(0).getInt("stock"));
+    }
+
+    @Test public void extraRequestCanBeReviewedWithoutChargingOrChangingPublicStock() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        DeviceBridgeProvider bridge = new DeviceBridgeProvider();
+        android.content.pm.ProviderInfo info = new android.content.pm.ProviderInfo();
+        info.authority = "pe.manchapp.beta.bridge";
+        bridge.attachInfo(context, info);
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal(info.authority, bridge);
+        LocalStore store = LocalStore.open(context);
+        JSONObject base = store.receiveDeviceOrder(OrderDraft.build(store.snapshot(), details(),
+                new JSONObject().put("mazamorra", 1), false, System.currentTimeMillis()));
+        JSONObject before = store.snapshot();
+        JSONObject request = details().put("requestId", "extra-demo-1")
+                .put("saleDate", base.getString("saleDate")).put("baseRequestId", base.getString("requestId"))
+                .put("items", new JSONArray().put(new JSONObject().put("productId", "mazamorra").put("quantity", 1)));
+        JSONObject pending = DeviceBridgeClient.requestMore(context, request);
+        String id = pending.getString("id");
+        assertEquals("pending", pending.getString("status"));
+        try {
+            store.resolveExtraRequest(id, true, 4.555, true);
+            fail("The amount must have at most two decimals");
+        } catch (IOException expected) {
+            assertEquals("pending", DeviceBridgeClient.extraRequest(context, id).getString("status"));
+        }
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup().visible()) {
+            AppShell shell = (AppShell) field(controller.get(), "shell");
+            Method review = OrderScreen.class.getDeclaredMethod("reviewExtraRequest", AppShell.class, JSONObject.class);
+            review.setAccessible(true);
+            review.invoke(null, shell, pending);
+            android.app.AlertDialog dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+            assertTrue(dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick());
+            ShadowLooper.idleMainLooper();
+            dialog = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+            java.util.ArrayList<View> labels = new java.util.ArrayList<>();
+            dialog.getWindow().getDecorView().findViewsWithText(labels, "Monto total de los extras", View.FIND_VIEWS_WITH_TEXT);
+            assertEquals(1, labels.size());
+            ViewGroup form = (ViewGroup) labels.get(0).getParent();
+            android.widget.EditText amount = (android.widget.EditText) form.getChildAt(1);
+            assertTrue(dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick());
+            assertNotNull(amount.getError());
+            amount.setText("4,50");
+            ((android.widget.CheckBox) form.getChildAt(2)).setChecked(true);
+            assertTrue(dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick());
+            assertFalse(dialog.isShowing());
+        }
+        JSONObject approved = DeviceBridgeClient.extraRequest(context, id);
+        assertEquals("approved", approved.getString("status"));
+        assertEquals(4.50, approved.getDouble("extraAmount"), .001);
+        assertEquals(base.getString("id"), approved.getString("sameDeliveryOrderId"));
+        assertEquals(base.getInt("number"), approved.getInt("sameDeliveryOrderNumber"));
+        assertEquals(4.50, DeviceBridgeClient.requestMore(context, request).getDouble("extraAmount"), .001);
+        assertEquals(id, LocalStore.deliveryExtras(store.snapshot(), base.getString("id")).getJSONObject(0).getString("id"));
+        assertEquals(before.getJSONArray("restockRequests").length() + 1,
+                store.snapshot().getJSONArray("restockRequests").length());
+        JSONObject second = DeviceBridgeClient.requestMore(context, request.put("requestId", "extra-demo-2"));
+        store.resolveExtraRequest(second.getString("id"), false, 0, false);
+        JSONObject rejected = DeviceBridgeClient.extraRequest(context, second.getString("id"));
+        assertEquals("rejected", rejected.getString("status"));
+        assertFalse(rejected.has("extraAmount"));
+        request.remove("baseRequestId");
+        JSONObject standalone = DeviceBridgeClient.requestMore(context, request.put("requestId", "extra-demo-3"));
+        try {
+            store.resolveExtraRequest(standalone.getString("id"), true, 0, true);
+            fail("An extra-only request cannot attach to a delivery");
+        } catch (IOException expected) {
+            assertEquals("pending", store.extraRequest(standalone.getString("id")).getString("status"));
+        }
+        store.resolveExtraRequest(standalone.getString("id"), true, 0, false);
+        JSONObject free = DeviceBridgeClient.extraRequest(context, standalone.getString("id"));
+        assertEquals(0, free.getDouble("extraAmount"), .001);
+        assertFalse(free.has("sameDeliveryOrderNumber"));
+        assertEquals(before.getJSONArray("products").toString(), store.snapshot().getJSONArray("products").toString());
+        assertEquals(before.getJSONArray("orders").toString(), store.snapshot().getJSONArray("orders").toString());
     }
 
     @Test public void savingManualOrderReturnsToSalesAndMakesTheNewOrderVisible() throws Exception {

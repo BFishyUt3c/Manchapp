@@ -36,7 +36,7 @@ final class OrderScreen {
         if ((statusFilter.equals("active") && finished) || (statusFilter.equals("finished") && !finished)
                 || (statusFilter.equals("registered") && !state.equals("registered"))) return false;
         if (paymentFilter.equals("paid")) return order.optBoolean("paid");
-        if (paymentFilter.equals("unpaid")) return !cancelled && !order.optBoolean("paid");
+        if (paymentFilter.equals("unpaid")) return !cancelled && !state.equals("registered") && !order.optBoolean("paid");
         return true;
     }
 
@@ -61,7 +61,18 @@ final class OrderScreen {
         MainActivity activity = shell.activity();
         NativeUi ui = shell.ui();
         LinearLayout content = shell.content();
-        shell.title("Ventas", "Gestiona pedidos, cobros y entregas.");
+        if ((activity.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            LinearLayout heading = new LinearLayout(activity);
+            heading.setGravity(Gravity.CENTER_VERTICAL);
+            TextView title = ui.heading("Ventas", 27);
+            if (android.os.Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
+            heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+            heading.addView(shell.button("+10 de prueba", false, () -> addDemoOrders(shell)));
+            shell.add(content, heading, 2);
+            shell.add(content, shell.text("Gestiona pedidos, cobros y entregas.", 16, NativeUi.MUTED, false), 7);
+        } else {
+            shell.title("Ventas", "Gestiona pedidos, cobros y entregas.");
+        }
         JSONArray orders = shell.data().optJSONArray("orders");
         if (shell.orderDate().isEmpty()) {
             String date = shell.data().optJSONObject("settings").optString("saleDate");
@@ -108,6 +119,7 @@ final class OrderScreen {
         quickActions.addView(summaryBtn, new LinearLayout.LayoutParams(0, -2, 1));
         shell.add(content, quickActions, 12);
         shell.add(content, shell.button("Organizar reparto", false, () -> shell.go("dispatch", "")), 12);
+        showExtraRequests(shell);
 
         showOrderFilters(shell);
         int count = 0;
@@ -136,8 +148,10 @@ final class OrderScreen {
 
             boolean paid = o.optBoolean("paid");
             if (paid || !status.equals("cancelled")) {
-                TextView paidChip = ui.chip(paid ? "Pagado" : "Pago pendiente",
-                        paid ? NativeUi.GREEN : PAYMENT_INK, paid ? PAID_BG : PAYMENT_BG);
+                boolean awaitingConfirmation = !paid && status.equals("registered");
+                TextView paidChip = ui.chip(paid ? "Pagado" : awaitingConfirmation ? "Cobro tras confirmar" : "Pago pendiente",
+                        paid ? NativeUi.GREEN : awaitingConfirmation ? NativeUi.MUTED : PAYMENT_INK,
+                        paid ? PAID_BG : awaitingConfirmation ? NativeUi.LINE : PAYMENT_BG);
                 paidChip.setTextSize(11);
                 badges.addView(paidChip);
             }
@@ -161,6 +175,142 @@ final class OrderScreen {
         }
     }
 
+    private static void showExtraRequests(AppShell shell) {
+        JSONArray requests = shell.data().optJSONArray("restockRequests");
+        List<JSONObject> visible = new ArrayList<>();
+        int pending = 0;
+        for (int i = 0; requests != null && i < requests.length(); i++) {
+            JSONObject request = requests.optJSONObject(i);
+            if (request == null) continue;
+            if ("pending".equals(request.optString("status"))) pending++;
+            visible.add(request);
+        }
+        if (visible.isEmpty()) return;
+        Collections.reverse(visible);
+        shell.menu("Solicitudes de cupos extra", pending > 0 ? pending + " pendiente(s)" : "Consultar decisiones", "orders", () -> {
+            String[] labels = new String[visible.size()];
+            for (int i = 0; i < labels.length; i++) {
+                JSONObject request = visible.get(i);
+                labels[i] = request.optString("customer") + " · " + extraStatus(request);
+            }
+            new AlertDialog.Builder(shell.activity()).setTitle("Solicitudes de cupos extra")
+                    .setItems(labels, (dialog, index) -> reviewExtraRequest(shell, visible.get(index)))
+                    .setNegativeButton("Cerrar", null).show();
+        });
+    }
+
+    private static String extraStatus(JSONObject request) {
+        switch (request.optString("status")) {
+            case "approved": return "Aceptada";
+            case "rejected": return "Rechazada";
+            default: return "Por revisar";
+        }
+    }
+
+    private static void reviewExtraRequest(AppShell shell, JSONObject request) {
+        StringBuilder message = new StringBuilder(request.optString("customer")).append(" · ")
+                .append(request.optString("phone")).append("\n").append(SaleSchedule.day(request));
+        if ("delivery".equals(request.optString("fulfillment"))) {
+            message.append("\nDelivery: ").append(request.optString("address"));
+            if (!request.optString("reference").isEmpty()) message.append("\n").append(request.optString("reference"));
+        } else message.append("\nRecojo en la olla");
+        JSONArray items = request.optJSONArray("items");
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item != null) message.append("\n• ").append(item.optInt("quantity")).append(" × ").append(item.optString("name"));
+        }
+        String baseId = request.optString("baseRequestId");
+        if (!baseId.isEmpty()) {
+            try {
+                int baseNumber = shell.store().deviceOrder(baseId).optInt("number");
+                message.append("\nPedido asociado: #").append(baseNumber);
+            } catch (Exception ignored) { /* The base order may still be waiting to sync. */ }
+        }
+        boolean pending = "pending".equals(request.optString("status"));
+        if (request.has("extraAmount")) {
+            message.append("\n\nMonto extra: ").append(shell.cash(request.optDouble("extraAmount")));
+            int linked = request.optInt("sameDeliveryOrderNumber");
+            if (linked > 0) message.append("\nJunto al pedido #").append(linked);
+            else message.append("\nEntrega por coordinar.");
+        }
+        AlertDialog.Builder review = new AlertDialog.Builder(shell.activity())
+                .setTitle("Cupos extra · " + extraStatus(request)).setMessage(message);
+        if (pending) {
+            review.setNeutralButton("Volver", null)
+                    .setNegativeButton("Rechazar", (dialog, which) -> {
+                        try {
+                            shell.store().resolveExtraRequest(request.getString("id"), false, 0, false);
+                            shell.render();
+                            shell.toast("Solicitud rechazada.");
+                        } catch (Exception error) {
+                            shell.toast(error.getMessage());
+                        }
+                    })
+                    .setPositiveButton("Aceptar", (dialog, which) -> priceExtraRequest(shell, request));
+        } else {
+            review.setPositiveButton("Cerrar", null);
+        }
+        review.show();
+    }
+
+    private static void priceExtraRequest(AppShell shell, JSONObject request) {
+        JSONObject base;
+        try {
+            base = shell.store().extraDeliveryOrder(request);
+        } catch (Exception error) {
+            shell.toast(error.getMessage());
+            return;
+        }
+        LinearLayout form = dialogContainer(shell);
+        EditText amount = styledInput(shell, form, "Monto total de los extras (S/)", "Ej. 4.50", 8, true);
+        amount.setKeyListener(android.text.method.DigitsKeyListener.getInstance("0123456789.,"));
+        amount.setRawInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        CheckBox same = new CheckBox(shell.activity());
+        if (base != null) {
+            same.setText("Junto al pedido #" + base.optInt("number"));
+            shell.add(form, same, 8);
+        } else {
+            shell.add(form, shell.text("La entrega de los extras se coordinará por separado.", 14, NativeUi.MUTED, false), 8);
+        }
+        AlertDialog dialog = new AlertDialog.Builder(shell.activity()).setTitle("Aceptar cupos extra")
+                .setView(form).setNegativeButton("Volver", (d, w) -> reviewExtraRequest(shell, request))
+                .setPositiveButton("Guardar aceptación", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String input = amount.getText().toString().trim().replace(',', '.');
+            if (!input.matches("[0-9]{1,5}(\\.[0-9]{1,2})?")) {
+                amount.setError("Ingresa el monto con hasta dos decimales.");
+                return;
+            }
+            try {
+                shell.store().resolveExtraRequest(request.getString("id"), true, Double.parseDouble(input),
+                        base != null && same.isChecked());
+                dialog.dismiss();
+                shell.render();
+                shell.toast("Solicitud aceptada.");
+            } catch (Exception error) {
+                shell.toast(error.getMessage());
+            }
+        }));
+        dialog.show();
+    }
+
+    private static void addDemoOrders(AppShell shell) {
+        if (shell.syncing()) {
+            shell.toast("Espera a que termine la actualización.");
+            return;
+        }
+        try {
+            shell.orderDate(shell.store().addDemoDeliveries());
+            shell.orderDelivery("delivery");
+            shell.orderFilter("active");
+            shell.orderPayment("all");
+            shell.render();
+            shell.toast("Se agregaron 10 pedidos de delivery de prueba.");
+        } catch (Exception error) {
+            shell.toast("No se pudieron agregar los pedidos de prueba.");
+        }
+    }
+
     static void showOrder(AppShell shell) {
         MainActivity activity = shell.activity();
         NativeUi ui = shell.ui();
@@ -178,6 +328,10 @@ final class OrderScreen {
         shell.add(statusCard, ui.chip(shell.status(state), statusColor(state), statusBackground(state)), 0);
         shell.add(statusCard, shell.text("Venta: " + SaleSchedule.day(order), 15, NativeUi.INK, true), 8);
         if (state.equals("registered")) {
+            if (order.optBoolean("demoOrder") && !order.optString("demoReviewReason").isEmpty()) {
+                shell.add(statusCard, shell.text("Solicitud especial · " + order.optString("demoReviewReason"),
+                        14, NativeUi.INK, true), 6);
+            }
             shell.add(statusCard, shell.text("Confirma el pedido para avisar al cliente que lo aceptaste.",
                     14, NativeUi.MUTED, false), 6);
         }
@@ -231,7 +385,9 @@ final class OrderScreen {
         String method = order.optString("paymentMethodConfirmed", order.optString("payment"));
         shell.add(payment, shell.text("PAGO · " + methodLabel(method), 12, NativeUi.WINE, true), 0);
         boolean paid = order.optBoolean("paid");
-        if (paid || !state.equals("cancelled")) {
+        if (!paid && state.equals("registered")) {
+            shell.add(payment, shell.text("Confirma el pedido para habilitar el cobro.", 14, NativeUi.MUTED, false), 7);
+        } else if (paid || !state.equals("cancelled")) {
             shell.add(payment, ui.chip(paid ? "Pagado" : "Pago pendiente",
                     paid ? NativeUi.GREEN : PAYMENT_INK, paid ? PAID_BG : PAYMENT_BG), 7);
         }
@@ -242,7 +398,7 @@ final class OrderScreen {
             shell.add(payment, shell.text("Nota: " + order.optString("paymentNote"), 13, NativeUi.MUTED, false), 3);
         }
         shell.add(payment, shell.text("Total " + shell.cash(order.optDouble("total")), 19, NativeUi.INK, true), 7);
-        if (!state.equals("cancelled")) {
+        if (!state.equals("cancelled") && (paid || !state.equals("registered"))) {
             shell.add(payment, shell.button(order.optBoolean("paid") ? "Corregir estado del pago" : "Confirmar dinero recibido", false,
                     () -> {
                         if (order.optBoolean("paid")) {
@@ -278,6 +434,13 @@ final class OrderScreen {
                 ? (order.optBoolean("deliveryOffer") ? "Gratis por promoción" : shell.cash(order.optDouble("fee")))
                 : "Recojo sin costo"), 14, NativeUi.MUTED, false), 12);
         shell.add(content, food, 12);
+        JSONArray extras = LocalStore.deliveryExtras(shell.data(), order.optString("id"));
+        for (int i = 0; i < extras.length(); i++) {
+            JSONObject extra = extras.optJSONObject(i);
+            shell.menu("Cupos extra · " + shell.cash(extra.optDouble("extraAmount")),
+                    "Incluidos en esta entrega. El monto se maneja por separado.", "orders",
+                    () -> reviewExtraRequest(shell, extra));
+        }
 
         if (SaleRules.validPhone(order.optString("phone"))) {
             shell.add(content, ui.button("Llamar al cliente", false, null, () -> {
@@ -341,7 +504,7 @@ final class OrderScreen {
         if (!Arrays.asList("delivering", "delivered", "cancelled").contains(state)) {
             shell.add(content, shell.button("Cancelar este pedido", false, () -> new AlertDialog.Builder(activity)
                     .setTitle("¿Cancelar el pedido?")
-                    .setMessage("Revisa con el cliente antes de cancelar. Los cupos volverán a quedar disponibles.")
+                    .setMessage("Revisa con el cliente antes de cancelar. Si los productos siguen en la jornada original, se devolverán sus cupos.")
                     .setNegativeButton("Conservar pedido", null)
                     .setPositiveButton("Sí, cancelar", (d, w) -> {
                         if (shell.checkPending(shell.currentId())) return;

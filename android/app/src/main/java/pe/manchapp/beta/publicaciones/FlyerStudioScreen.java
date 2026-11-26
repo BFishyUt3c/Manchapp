@@ -129,6 +129,7 @@ final class FlyerStudioScreen {
                         + "\n" + SaleSchedule.display(p.optString("saleDate"), true);
 
                 CheckBox box = new CheckBox(activity);
+                box.setTag("flyer:product:" + id);
                 box.setText(label);
                 box.setTextSize(15);
                 box.setTextColor(NativeUi.INK);

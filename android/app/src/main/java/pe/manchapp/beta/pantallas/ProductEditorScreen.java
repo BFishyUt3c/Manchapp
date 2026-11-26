@@ -51,7 +51,9 @@ final class ProductEditorScreen {
 
     static void attachStudioPhoto(AppShell shell, JSONObject product, boolean replace) {
         MainActivity activity = shell.activity();
-        if (!replace && ProductScreen.hasDraft(shell)
+        boolean editingExisting = shell.screen().equals("edit") && shell.draft() != null
+                && !shell.draft().optString("id").isEmpty();
+        if (!replace && (ProductScreen.hasDraft(shell) || editingExisting)
                 && (product == null || !shell.draft().optString("id").equals(product.optString("id")))) {
             new AlertDialog.Builder(activity)
                     .setTitle("Ya tienes un producto en borrador")

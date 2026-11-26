@@ -44,14 +44,23 @@ public final class PhotoComposeActivity extends Activity {
     private void showFormatDialog(){new AlertDialog.Builder(this).setTitle("Formato de imagen").setItems(new String[]{"Como el fondo","Cuadrado 1:1","Vertical 4:5","Historia 9:16"},(d,i)->changeFormat(new String[]{"background","square","portrait","story"}[i])).show();}
     private void showFitDialog(){new AlertDialog.Builder(this).setTitle("Escala del fondo").setItems(new String[]{"Cubrir","Ajustar","Estirar"},(d,i)->changeFit(new String[]{"cover","contain","stretch"}[i])).show();}
     private void changeFit(String fit){if(busy)return;String before=document.state.toString();try{document.state.put("bgFit",fit);document.pan("background",0,0);commit(before);status.setText("Escala del fondo actualizada.");}catch(Exception error){status.setText("No pudimos cambiar la escala del fondo.");}}
-    private void options(){if(busy)return;boolean product=document.layer(canvas.selected)!=null;String[] choices=product?new String[]{"Traer al frente","Formato de imagen","Deshacer último cambio"}:new String[]{"Formato de imagen","Escala del fondo","Deshacer último cambio"};new AlertDialog.Builder(this).setTitle(product?"Producto seleccionado":"Fondo").setItems(choices,(dialog,index)->{
+    private void options(){if(busy)return;boolean product=document.layer(canvas.selected)!=null;String[] choices=product?new String[]{"Traer al frente","Formato de imagen","Deshacer último cambio"}:new String[]{"Formato de imagen","Escala del fondo",
+            document.contactShadow()?"Quitar sombra de apoyo":"Añadir sombra de apoyo","Deshacer último cambio"};new AlertDialog.Builder(this).setTitle(product?"Producto seleccionado":"Fondo").setItems(choices,(dialog,index)->{
         if(product){
             if(index==2){undo();return;}
             if(index==1){showFormatDialog();return;}
             String before=document.state.toString();JSONArray kept=new JSONArray();JSONObject selected=document.layer(canvas.selected);for(int i=0;i<document.layers().length();i++)if(!document.layers().optJSONObject(i).optString("id").equals(canvas.selected))kept.put(document.layers().optJSONObject(i));kept.put(selected);try{document.state.put("layers",kept);commit(before);layers();}catch(Exception error){status.setText("No pudimos cambiar el orden.");}
             return;
         }
-        if(index==2){undo();return;}
+        if(index==3){undo();return;}
+        if(index==2){
+            String before=document.state.toString();
+            try{
+                document.state.put("contactShadow",!document.contactShadow());
+                commit(before);
+            }catch(JSONException error){status.setText("No pudimos cambiar la sombra.");}
+            return;
+        }
         if(index==1){showFitDialog();return;}
         showFormatDialog();
     }).setNegativeButton("Volver",null).show();}

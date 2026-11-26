@@ -20,6 +20,8 @@ public final class PhotoEditorActivity extends Activity {
     private ImageView preview;
     private TextView progress,save,undoCrop;
     private boolean busy=true,destroyed=false,improve=true,showOriginal=false,includeObjects=false,sourceTransparent=false;
+    private boolean angledBackground = true, appliedAngle = true;
+    private Switch perspective;
     private int intensity=100;
     private String manualSession="";
     private String background="original",appliedBackground="original",tool="adjust";
@@ -35,7 +37,7 @@ public final class PhotoEditorActivity extends Activity {
 
     @Override public void onCreate(Bundle state){
         super.onCreate(state);ui=new PhotoUi(this);includeObjects=getIntent().getBooleanExtra("includeObjects",false);
-        if(state!=null){manualSession=state.getString("manualSession","");includeObjects=state.getBoolean("includeObjects",includeObjects);improve=state.getBoolean("improve",true);intensity=state.getInt("intensity",100);background=state.getString("background","original");tool=state.getString("tool","adjust");showOriginal=state.getBoolean("showOriginal",false);float[] bounds=state.getFloatArray("crop");if(bounds!=null&&bounds.length==4)crop.set(bounds[0],bounds[1],bounds[2],bounds[3]);}
+        if(state!=null){manualSession=state.getString("manualSession","");includeObjects=state.getBoolean("includeObjects",includeObjects);improve=state.getBoolean("improve",true);intensity=state.getInt("intensity",100);background=state.getString("background","original");angledBackground=state.getBoolean("angledBackground",true);tool=state.getString("tool","adjust");showOriginal=state.getBoolean("showOriginal",false);float[] bounds=state.getFloatArray("crop");if(bounds!=null&&bounds.length==4)crop.set(bounds[0],bounds[1],bounds[2],bounds[3]);}
         getWindow().getDecorView().setSystemUiVisibility(0);getWindow().setStatusBarColor(PhotoUi.BG);getWindow().setNavigationBarColor(PhotoUi.PANEL);draw();
         worker.execute(()->{try{original=ImageTools.decodeFile(input(this),1280);sourceTransparent=ImageTools.hasTransparency(original);engine=new FoodPhotoEngine(this,original);applyManualMask();renderPhoto();}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){Toast.makeText(this,"No pudimos abrir esta foto. La imagen anterior se conserva.",Toast.LENGTH_LONG).show();finish();}});}});
     }
@@ -59,11 +61,103 @@ public final class PhotoEditorActivity extends Activity {
         SeekBar slider=new SeekBar(this);slider.setMax(100);slider.setProgress(intensity);slider.setMinimumHeight(ui.dp(42));slider.setProgressTintList(ColorStateList.valueOf(PhotoUi.LIGHT));slider.setThumbTintList(ColorStateList.valueOf(PhotoUi.LIGHT));slider.setContentDescription("Intensidad de la mejora automática");slider.setEnabled(improve);ui.add(panel,slider,0);
         auto.setOnCheckedChangeListener((view,checked)->{improve=checked;slider.setEnabled(checked&&!busy);requestRender();});slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar view,int amount,boolean user){if(user){intensity=amount;value.setText(amount+"%");}}public void onStartTrackingTouch(SeekBar view){}public void onStopTrackingTouch(SeekBar view){requestRender();}});
     }
-    private void buildBackgroundTools(){LinearLayout panel=ui.column();toolPanels.put("background",panel);toolBody.addView(panel);HorizontalScrollView horizontal=new HorizontalScrollView(this);horizontal.setHorizontalScrollBarEnabled(false);LinearLayout row=new LinearLayout(this);String[] ids={"custom","original","transparent","blur","wood","marble","cloth"},labels={"Mi fondo","Original","Sin fondo","Desenfocar","Madera","Mármol","Mantel"};
-        for(int i=0;i<ids.length;i++){String id=ids[i];LinearLayout choice=ui.column();choice.setPadding(ui.dp(4),ui.dp(4),ui.dp(4),ui.dp(4));choice.setGravity(Gravity.CENTER);choice.setTag(id);choice.setOnClickListener(v->{if(id.equals("custom")){pickBackground();return;}background=id;requestRender();});choice.setContentDescription("Fondo: "+labels[i]);ui.role(choice);ImageView swatch=new ImageView(this);swatch.setScaleType(ImageView.ScaleType.CENTER_CROP);swatch.setClipToOutline(true);swatch.setBackground(ui.background(PhotoUi.SURFACE,0,9));
-            if(id.equals("custom"))swatch.setImageDrawable(new NativeUi.Icon("plus",PhotoUi.LIGHT,ui.dp(25)));else if(id.equals("transparent"))swatch.setBackground(new PhotoUi.Checker(ui.dp(7)));else if(id.equals("wood")||id.equals("marble")||id.equals("cloth")){Bitmap bitmap=FoodPhotoEngine.texture(96,64,id);swatches.add(bitmap);swatch.setImageBitmap(bitmap);}else if(id.equals("blur")){android.graphics.drawable.GradientDrawable gradient=new android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TL_BR,new int[]{0xff8e7263,0xff424650,0xffbcaca0});gradient.setCornerRadius(ui.dp(9));swatch.setBackground(gradient);}else swatch.setImageDrawable(new NativeUi.Icon("photo",PhotoUi.MUTED,ui.dp(25)));
-            choice.addView(swatch,new LinearLayout.LayoutParams(ui.dp(58),ui.dp(43)));TextView label=ui.text(labels[i],12,PhotoUi.TEXT,false);label.setGravity(Gravity.CENTER);ui.add(choice,label,6);LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(ui.dp(76),-2);params.rightMargin=ui.dp(4);row.addView(choice,params);backgrounds.put(id,choice);}
-        horizontal.addView(row);ui.add(panel,horizontal,0);TextView manual=ui.button("Borrar fondo a mano",false,()->openManualMask());manual.setTag("editor:background-mask");ui.add(panel,manual,8);Switch complete=new Switch(this);complete.setText("Incluir plato y acompañamientos");complete.setTextColor(PhotoUi.MUTED);complete.setTextSize(13);complete.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));complete.setMinHeight(ui.dp(44));complete.setThumbTintList(ColorStateList.valueOf(PhotoUi.LIGHT));complete.setTrackTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PhotoUi.ACCENT,PhotoUi.SURFACE}));complete.setChecked(includeObjects);complete.setOnCheckedChangeListener((view,checked)->{includeObjects=checked;requestRender();});ui.add(panel,complete,4);
+    private void buildBackgroundTools() {
+        LinearLayout panel = ui.column();
+        toolPanels.put("background", panel);
+        toolBody.addView(panel);
+        HorizontalScrollView horizontal = new HorizontalScrollView(this);
+        horizontal.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        String[] ids = {"original", "wood", "marble", "cloth", "custom", "blur", "transparent"};
+        String[] labels = {"Original", "Madera", "Mármol", "Lino", "Mi fondo", "Desenfocar", "Sin fondo"};
+        for (int i = 0; i < ids.length; i++) {
+            String id = ids[i];
+            LinearLayout choice = ui.column();
+            choice.setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4));
+            choice.setGravity(Gravity.CENTER);
+            choice.setTag(id);
+            choice.setOnClickListener(view -> {
+                if (id.equals("custom")) {
+                    pickBackground();
+                    return;
+                }
+                background = id;
+                requestRender();
+            });
+            choice.setContentDescription("Fondo: " + labels[i]);
+            ui.role(choice);
+
+            ImageView swatch = new ImageView(this);
+            swatch.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            swatch.setClipToOutline(true);
+            swatch.setBackground(ui.background(PhotoUi.SURFACE, 0, 9));
+            if (PhotoBackgrounds.isPreset(id)) {
+                try {
+                    Bitmap bitmap = PhotoBackgrounds.render(this, 112, 84, id, true);
+                    swatches.add(bitmap);
+                    swatch.setImageBitmap(bitmap);
+                } catch (IOException error) {
+                    swatch.setImageDrawable(new NativeUi.Icon("photo", PhotoUi.MUTED, ui.dp(25)));
+                }
+            } else if (id.equals("transparent")) {
+                swatch.setBackground(new PhotoUi.Checker(ui.dp(7)));
+            } else if (id.equals("blur")) {
+                android.graphics.drawable.GradientDrawable gradient = new android.graphics.drawable.GradientDrawable(
+                        android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                        new int[]{0xff8e7263, 0xff424650, 0xffbcaca0});
+                gradient.setCornerRadius(ui.dp(9));
+                swatch.setBackground(gradient);
+            } else {
+                swatch.setImageDrawable(new NativeUi.Icon(id.equals("custom") ? "plus" : "photo",
+                        PhotoUi.LIGHT, ui.dp(25)));
+            }
+
+            choice.addView(swatch, new LinearLayout.LayoutParams(ui.dp(60), ui.dp(45)));
+            TextView label = ui.text(labels[i], 12, PhotoUi.TEXT, false);
+            label.setGravity(Gravity.CENTER);
+            ui.add(choice, label, 6);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ui.dp(76), -2);
+            params.rightMargin = ui.dp(4);
+            row.addView(choice, params);
+            backgrounds.put(id, choice);
+        }
+        horizontal.addView(row);
+        ui.add(panel, horizontal, 0);
+
+        perspective = backgroundSwitch("Perspectiva inclinada", angledBackground);
+        perspective.setTag("editor:perspective");
+        perspective.setVisibility(PhotoBackgrounds.isPreset(background) ? View.VISIBLE : View.GONE);
+        perspective.setOnCheckedChangeListener((view, checked) -> {
+            if (busy || checked == angledBackground) return;
+            angledBackground = checked;
+            requestRender();
+        });
+        ui.add(panel, perspective, 4);
+
+        TextView manual = ui.button("Borrar fondo a mano", false, this::openManualMask);
+        manual.setTag("editor:background-mask");
+        ui.add(panel, manual, 8);
+        Switch complete = backgroundSwitch("Incluir plato y acompañamientos", includeObjects);
+        complete.setOnCheckedChangeListener((view, checked) -> {
+            includeObjects = checked;
+            requestRender();
+        });
+        ui.add(panel, complete, 4);
+    }
+
+    private Switch backgroundSwitch(String label, boolean checked) {
+        Switch toggle = new Switch(this);
+        toggle.setText(label);
+        toggle.setTextColor(PhotoUi.MUTED);
+        toggle.setTextSize(13);
+        toggle.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        toggle.setMinHeight(ui.dp(44));
+        toggle.setThumbTintList(ColorStateList.valueOf(PhotoUi.LIGHT));
+        toggle.setTrackTintList(new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{PhotoUi.ACCENT, PhotoUi.SURFACE}));
+        toggle.setChecked(checked);
+        return toggle;
     }
     private void applyManualMask()throws Exception{if(manualSession!=null&&!manualSession.isEmpty()){Bitmap mask=MaskEditSession.open(this,manualSession).read("current.png");try{engine.setManualMask(mask);}finally{mask.recycle();}}}
     private void openManualMask(){if(busy)return;busy=true;enabled(false);progress.setText("Preparando recorte manual…");worker.execute(()->{Bitmap source=null,cutout=null;try{engine.includeObjects(includeObjects);source=engine.render(improve?intensity/100f:0,"original");try{cutout=engine.render(improve?intensity/100f:0,"transparent");}catch(IOException noMask){cutout=source.copy(Bitmap.Config.ARGB_8888,true);}MaskEditSession session=MaskEditSession.create(this,source,cutout);engine.close();engine=null;runOnUiThread(()->{if(!destroyed){busy=false;startActivityForResult(new Intent(this,MaskEditorActivity.class).putExtra("maskSessionId",session.id()).putExtra("restoreLimited",sourceTransparent),93);}});}catch(Exception|OutOfMemoryError error){runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos abrir la corrección manual. La foto anterior se conserva.");}});}finally{if(source!=null)source.recycle();if(cutout!=null)cutout.recycle();}});}
@@ -80,16 +174,16 @@ public final class PhotoEditorActivity extends Activity {
     }
     private void requestRender(){if(busy||destroyed)return;busy=true;showOriginal=false;enabled(false);progress.setText(background.equals("original")?"Ajustando foto…":"Separando el fondo…");worker.execute(()->renderPhoto());}
     private void renderPhoto(){
-        final float amount=improve?intensity/100f:0;final String selectedBackground=background;final RectF selectedCrop=new RectF(crop);Bitmap working=null,before=null;
-        try{engine.includeObjects(includeObjects);working=engine.render(amount,selectedBackground);Bitmap next=PhotoCropView.apply(working,selectedCrop);if(next!=working)working.recycle();working=null;try{before=PhotoCropView.apply(original,selectedCrop);}catch(Exception|OutOfMemoryError error){next.recycle();throw error;}final Bitmap originalView=before;before=null;
-            runOnUiThread(()->{if(destroyed){next.recycle();if(originalView!=original)originalView.recycle();return;}Bitmap old=result,oldComparison=comparison;result=next;comparison=originalView;appliedBackground=selectedBackground;busy=false;display();if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();enabled(true);progress.setText(selectedBackground.equals("transparent")?"Sin fondo · revisa los bordes":"");});
-        }catch(Exception|OutOfMemoryError error){if(working!=null)working.recycle();if(before!=null&&before!=original)before.recycle();runOnUiThread(()->{if(destroyed)return;busy=false;background=appliedBackground;showOriginal=result==null;display();enabled(true);progress.setText("No pudimos aplicar el cambio. Conservamos tu recorte y la última foto.");Toast.makeText(this,error instanceof IOException?error.getMessage():"La foto es muy grande para procesarla. Tu recorte y la última edición siguen aquí.",Toast.LENGTH_LONG).show();});}
+        final float amount=improve?intensity/100f:0;final String selectedBackground=background;final boolean selectedAngle=angledBackground;final RectF selectedCrop=new RectF(crop);Bitmap working=null,before=null;
+        try{engine.includeObjects(includeObjects);engine.setAngledBackground(selectedAngle);working=engine.render(amount,selectedBackground);Bitmap next=PhotoCropView.apply(working,selectedCrop);if(next!=working)working.recycle();working=null;try{before=PhotoCropView.apply(original,selectedCrop);}catch(Exception|OutOfMemoryError error){next.recycle();throw error;}final Bitmap originalView=before;before=null;
+            runOnUiThread(()->{if(destroyed){next.recycle();if(originalView!=original)originalView.recycle();return;}Bitmap old=result,oldComparison=comparison;result=next;comparison=originalView;appliedBackground=selectedBackground;appliedAngle=selectedAngle;busy=false;display();if(old!=null&&old!=original)old.recycle();if(oldComparison!=null&&oldComparison!=original)oldComparison.recycle();enabled(true);progress.setText(selectedBackground.equals("transparent")?"Sin fondo · revisa los bordes":"");});
+        }catch(Exception|OutOfMemoryError error){if(working!=null)working.recycle();if(before!=null&&before!=original)before.recycle();runOnUiThread(()->{if(destroyed)return;busy=false;background=appliedBackground;angledBackground=appliedAngle;showOriginal=result==null;display();enabled(true);progress.setText("No pudimos aplicar el cambio. Conservamos tu recorte y la última foto.");Toast.makeText(this,error instanceof IOException?error.getMessage():"La foto es muy grande para procesarla. Tu recorte y la última edición siguen aquí.",Toast.LENGTH_LONG).show();});}
     }
-    private void display(){preview.setBackground((showOriginal?sourceTransparent:background.equals("transparent")||sourceTransparent&&background.equals("original"))?new PhotoUi.Checker(ui.dp(10)):null);preview.setImageBitmap(showOriginal||result==null?(comparison==null?original:comparison):result);for(Map.Entry<String,TextView> entry:comparisons.entrySet()){boolean active=entry.getKey().equals(showOriginal?"original":"result");entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,0,17));entry.getValue().setTextColor(active?PhotoUi.TEXT:PhotoUi.MUTED);}undoCrop.setEnabled(!busy&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);for(Map.Entry<String,View> entry:backgrounds.entrySet()){boolean active=entry.getKey().equals(background);entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,active?PhotoUi.LIGHT:0,12));}}
+    private void display(){perspective.setVisibility(PhotoBackgrounds.isPreset(background)?View.VISIBLE:View.GONE);perspective.setChecked(angledBackground);preview.setBackground((showOriginal?sourceTransparent:background.equals("transparent")||sourceTransparent&&background.equals("original"))?new PhotoUi.Checker(ui.dp(10)):null);preview.setImageBitmap(showOriginal||result==null?(comparison==null?original:comparison):result);for(Map.Entry<String,TextView> entry:comparisons.entrySet()){boolean active=entry.getKey().equals(showOriginal?"original":"result");entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,0,17));entry.getValue().setTextColor(active?PhotoUi.TEXT:PhotoUi.MUTED);}undoCrop.setEnabled(!busy&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);for(Map.Entry<String,View> entry:backgrounds.entrySet()){boolean active=entry.getKey().equals(background);entry.getValue().setSelected(active);entry.getValue().setBackground(ui.background(active?PhotoUi.SURFACE:Color.TRANSPARENT,active?PhotoUi.LIGHT:0,12));}}
     private void enabled(boolean value){save.setEnabled(value);save.setAlpha(value?1:.4f);enableChildren(toolBody,value);if(undoCrop!=null){undoCrop.setEnabled(value&&!PhotoCropView.isFull(crop));undoCrop.setAlpha(PhotoCropView.isFull(crop)?.35f:1);}for(TextView comparison:comparisons.values())comparison.setEnabled(value);View slider=findSeekBar(toolPanels.get("adjust"));if(slider!=null)slider.setEnabled(value&&improve);}
     private View findSeekBar(View root){if(root instanceof SeekBar)return root;if(root instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)root;for(int i=0;i<group.getChildCount();i++){View found=findSeekBar(group.getChildAt(i));if(found!=null)return found;}}return null;}
     private void enableChildren(android.view.ViewGroup group,boolean value){for(int i=0;i<group.getChildCount();i++){View child=group.getChildAt(i);child.setEnabled(value);if(child instanceof android.view.ViewGroup)enableChildren((android.view.ViewGroup)child,value);}}
     private void save(){if(busy)return;final Bitmap chosen=result==null?(comparison==null?original:comparison):result;if(chosen==null)return;busy=true;enabled(false);progress.setText("Guardando foto…");worker.execute(()->{android.util.AtomicFile file=new CrossFile(output(this));FileOutputStream out=null;try{String encoded=ImageTools.encodeEdited(chosen);out=file.startWrite();out.write(encoded.getBytes("UTF-8"));file.finishWrite(out);runOnUiThread(()->{if(!destroyed){setResult(RESULT_OK);finish();}});}catch(Exception|OutOfMemoryError error){if(out!=null)file.failWrite(out);runOnUiThread(()->{if(!destroyed){busy=false;enabled(true);progress.setText("No pudimos guardar. Tu foto sigue abierta.");}});}});}
-    @Override public void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("manualSession",manualSession);state.putBoolean("includeObjects",includeObjects);state.putBoolean("improve",improve);state.putInt("intensity",intensity);state.putString("tool",tool);state.putBoolean("showOriginal",showOriginal);state.putString("background",background);state.putFloatArray("crop",new float[]{crop.left,crop.top,crop.right,crop.bottom});}
+    @Override public void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putString("manualSession",manualSession);state.putBoolean("includeObjects",includeObjects);state.putBoolean("improve",improve);state.putInt("intensity",intensity);state.putString("tool",tool);state.putBoolean("showOriginal",showOriginal);state.putString("background",background);state.putBoolean("angledBackground",angledBackground);state.putFloatArray("crop",new float[]{crop.left,crop.top,crop.right,crop.bottom});}
     @Override public void onDestroy(){destroyed=true;if(cropDialog!=null)cropDialog.dismiss();preview.setImageDrawable(null);for(Bitmap swatch:swatches)swatch.recycle();worker.execute(()->{if(engine!=null)engine.close();if(comparison!=null&&comparison!=original&&!comparison.isRecycled())comparison.recycle();if(original!=null&&!original.isRecycled())original.recycle();if(result!=null&&result!=original&&!result.isRecycled())result.recycle();});worker.shutdown();super.onDestroy();}
 }

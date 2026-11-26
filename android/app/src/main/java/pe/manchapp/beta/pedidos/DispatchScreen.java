@@ -34,7 +34,9 @@ final class DispatchScreen {
         for (int i = 0; orders != null && i < orders.length(); i++) {
             JSONObject order = orders.optJSONObject(i);
             if (eligible(order) && (date.isEmpty() || date.equals(order.optString("saleDate")))) {
-                result.add(order);
+                JSONObject detail = LocalStore.copy(order);
+                AppShell.put(detail, "deliveryExtras", LocalStore.deliveryExtras(state, order.optString("id")));
+                result.add(detail);
             }
         }
         result.sort(Comparator.comparing((JSONObject order) -> order.optString("zone"), String.CASE_INSENSITIVE_ORDER)
@@ -76,7 +78,12 @@ final class DispatchScreen {
                     "orders", () -> preview(shell, date, name)));
         }
 
-        shell.add(content, shell.text("Selecciona entregas", 18, NativeUi.INK, true), 12);
+        orders.removeIf(order -> !order.optString("driver").trim().isEmpty());
+        if (orders.isEmpty()) {
+            shell.note("Todas las entregas de este día ya tienen repartidor.");
+            return;
+        }
+        shell.add(content, shell.text("Entregas sin asignar", 18, NativeUi.INK, true), 12);
         Map<String, Integer> selected = new LinkedHashMap<>();
         String lastZone = null;
         for (JSONObject order : orders) {
@@ -85,13 +92,12 @@ final class DispatchScreen {
                 shell.add(content, shell.text(zone.isEmpty() ? "Sin sector" : zone, 15, NativeUi.WINE, true), 10);
                 lastZone = zone;
             }
-            String driver = order.optString("driver").trim();
             String id = order.optString("id");
             CheckBox check = new CheckBox(shell.activity());
             check.setMinHeight(shell.dp(48));
             check.setTextColor(NativeUi.INK);
             check.setText("Pedido " + order.optInt("number") + " · " + order.optString("customer")
-                    + "\n" + order.optString("address") + (driver.isEmpty() ? "" : "\nReparte: " + driver));
+                    + "\n" + order.optString("address"));
             check.setOnCheckedChangeListener((button, checked) -> {
                 if (checked) selected.put(id, order.optInt("version"));
                 else selected.remove(id);
@@ -118,7 +124,6 @@ final class DispatchScreen {
         form.addView(name);
         AlertDialog dialog = new AlertDialog.Builder(shell.activity())
                 .setTitle("Asignar " + selected.size() + " entrega(s)")
-                .setMessage("Si alguno ya tiene repartidor, se reasignará a la persona que indiques.")
                 .setView(form).setNegativeButton("Volver", null).setPositiveButton("Guardar", null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String driver = name.getText().toString().trim();
@@ -153,39 +158,109 @@ final class DispatchScreen {
             shell.render();
             return;
         }
-        String message = format(date, driver, orders);
-        new AlertDialog.Builder(shell.activity()).setTitle("Lista para " + driver).setMessage(message)
-                .setNegativeButton("Cerrar", null).setPositiveButton("Abrir WhatsApp", (dialog, ignored) -> {
+        String[] choices = new String[orders.size()];
+        for (int i = 0; i < orders.size(); i++) {
+            JSONObject order = orders.get(i);
+            choices[i] = orderLabel(order) + "\n" + order.optString("address");
+        }
+        new AlertDialog.Builder(shell.activity()).setTitle("Reparto de " + driver)
+                .setItems(choices, (dialog, index) -> showMessage(shell, date, driver, orders, orders.get(index)))
+                .setNegativeButton("Cerrar", null)
+                .setPositiveButton("Compartir lista", (dialog, ignored) -> showMessage(shell, date, driver, orders, null))
+                .show();
+    }
+
+    private static void showMessage(AppShell shell, String date, String driver, List<JSONObject> orders, JSONObject order) {
+        String message = order == null ? format(date, driver, orders) : formatOrder(date, order);
+        new AlertDialog.Builder(shell.activity()).setTitle(order == null ? "Lista para " + driver : orderLabel(order))
+                .setMessage(message)
+                .setNegativeButton("Volver", (dialog, ignored) -> preview(shell, date, driver))
+                .setPositiveButton("Abrir WhatsApp", (dialog, ignored) -> {
                     Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, message);
-                    FlyerStudioScreen.openWhatsAppOrChooser(shell.activity(), share, "Compartir lista de reparto", true);
+                    FlyerStudioScreen.openWhatsAppOrChooser(shell.activity(), share, "Compartir reparto", true);
                 }).show();
     }
 
     static String format(String date, String driver, List<JSONObject> orders) {
-        StringBuilder message = new StringBuilder("Reparto de ").append(driver).append("\n")
+        StringBuilder message = new StringBuilder("*Reparto de ").append(driver).append("*\n")
                 .append(SaleSchedule.display(date, true)).append(" · ").append(orders.size()).append(" entrega(s)");
-        NumberFormat currency = NumberFormat.getCurrencyInstance(new Locale("es", "PE"));
-        for (JSONObject order : orders) {
-            message.append("\n\nPedido ").append(order.optInt("number")).append(" · ").append(order.optString("customer"));
-            appendLine(message, "Teléfono", order.optString("phone"));
-            appendLine(message, "Sector", order.optString("zone"));
-            appendLine(message, "Dirección", order.optString("address"));
-            appendLine(message, "Referencia", order.optString("reference"));
+        for (int i = 0; i < orders.size(); i++) {
+            JSONObject order = orders.get(i);
+            message.append("\n\n*").append(i + 1).append(". ").append(orderLabel(order)).append("*\n")
+                    .append(address(order));
+            appendLine(message, "Tel.", order.optString("phone"));
             appendLine(message, "Horario", order.optString("deliveryWindow"));
-            JSONObject point = order.optJSONObject("deliveryLocation");
-            String query = point != null && DeliveryDestination.problem(order, date).isEmpty()
-                    ? point.optDouble("latitude") + "," + point.optDouble("longitude")
-                    : (order.optString("address") + " " + order.optString("zone")).trim();
-            appendLine(message, "Mapa", "https://www.google.com/maps/search/?api=1&query=" + Uri.encode(query));
-            JSONArray items = order.optJSONArray("items");
-            for (int i = 0; items != null && i < items.length(); i++) {
-                JSONObject item = items.optJSONObject(i);
-                if (item != null) message.append("\n- ").append(item.optInt("quantity")).append(" × ").append(item.optString("name"));
-            }
-            message.append(order.optBoolean("paid") ? "\nPago: pagado" :
-                    "\nSaldo pendiente: " + currency.format(order.optDouble("total", 0)));
+            message.append("\n").append(payment(order));
+            appendDeliveryExtras(message, order);
+            appendLine(message, "Mapa", mapLink(date, order));
         }
         return message.toString();
+    }
+
+    static String formatOrder(String date, JSONObject order) {
+        StringBuilder message = new StringBuilder("*").append(orderLabel(order)).append("*\n")
+                .append(SaleSchedule.display(date, true));
+        appendLine(message, "Dirección", address(order));
+        appendLine(message, "Referencia", order.optString("reference"));
+        appendLine(message, "Horario", order.optString("deliveryWindow"));
+        appendLine(message, "Teléfono", order.optString("phone"));
+        appendLine(message, "Mapa", mapLink(date, order));
+        JSONArray items = order.optJSONArray("items");
+        if (items != null && items.length() > 0) {
+            message.append("\n\n*Productos*");
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item != null) message.append("\n• ").append(item.optInt("quantity")).append(" × ").append(item.optString("name"));
+            }
+        }
+        message.append("\n\n").append(payment(order));
+        appendDeliveryExtras(message, order);
+        return message.toString();
+    }
+
+    private static void appendDeliveryExtras(StringBuilder message, JSONObject order) {
+        JSONArray extras = order.optJSONArray("deliveryExtras");
+        if (extras == null || extras.length() == 0) return;
+        message.append("\n*Incluye unidades extra*");
+        boolean coordinatePayment = false;
+        for (int i = 0; i < extras.length(); i++) {
+            JSONObject extra = extras.optJSONObject(i);
+            if (extra == null) continue;
+            coordinatePayment |= extra.optDouble("extraAmount") > 0;
+            JSONArray items = extra.optJSONArray("items");
+            for (int j = 0; items != null && j < items.length(); j++) {
+                JSONObject item = items.optJSONObject(j);
+                if (item != null) message.append("\n• ").append(item.optInt("quantity"))
+                        .append(" × ").append(item.optString("name"));
+            }
+        }
+        if (coordinatePayment) message.append("\nEl pago de los extras se coordina aparte.");
+    }
+
+    private static String orderLabel(JSONObject order) {
+        return "Pedido #" + order.optInt("number") + " · " + order.optString("customer");
+    }
+
+    private static String address(JSONObject order) {
+        String zone = order.optString("zone").trim();
+        return order.optString("address").trim() + (zone.isEmpty() ? "" : " · " + zone);
+    }
+
+    private static String mapLink(String date, JSONObject order) {
+        JSONObject point = order.optJSONObject("deliveryLocation");
+        String query = point != null && DeliveryDestination.problem(order, date).isEmpty()
+                ? point.optDouble("latitude") + "," + point.optDouble("longitude")
+                : (order.optString("address") + " " + order.optString("zone")).trim();
+        return "https://www.google.com/maps/search/?api=1&query=" + Uri.encode(query);
+    }
+
+    private static String payment(JSONObject order) {
+        if ("registered".equals(order.optString("status"))) {
+            return "*Por confirmar* · espera confirmación" + (order.optBoolean("paid") ? " · Pagado" : "");
+        }
+        if (order.optBoolean("paid")) return "*Pagado*";
+        return "*Saldo pendiente:* " + NumberFormat.getCurrencyInstance(new Locale("es", "PE"))
+                .format(order.optDouble("total", 0));
     }
 
     private static void appendLine(StringBuilder message, String label, String value) {

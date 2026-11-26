@@ -94,7 +94,12 @@ public class MainActivity extends Activity {
         if (shell != null) shell.shutdown();
     }
 
-    private int orderCount(){return shell==null||shell.store()==null?0:shell.store().snapshot().optJSONArray("orders").length();}
+    private int orderCount() {
+        if (shell == null || shell.store() == null) return 0;
+        JSONObject snapshot = shell.store().snapshot();
+        org.json.JSONArray extras = snapshot.optJSONArray("restockRequests");
+        return snapshot.optJSONArray("orders").length() + (extras == null ? 0 : extras.length());
+    }
 
     private void registerBridgeObserver(){
         if(bridgeObserver!=null)return;

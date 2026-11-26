@@ -26,8 +26,10 @@ public class PhotoEditorUiTest {
         private Bitmap source;
         static boolean failMask=false;
         static String lastBackground="";
+        static boolean lastAngle;
         @Implementation protected void __constructor__(Context context,Bitmap bitmap){source=bitmap;}
         @Implementation protected void includeObjects(boolean value){}
+        @Implementation protected void setAngledBackground(boolean value){lastAngle=value;}
         @Implementation protected void setManualMask(Bitmap value){}
         @Implementation protected Bitmap render(float strength,String background)throws IOException{lastBackground=background;if(failMask&&background.equals("transparent"))throw new IOException("No se pudo recortar automáticamente");return source.copy(Bitmap.Config.ARGB_8888,true);}
         @Implementation protected void close(){}
@@ -67,6 +69,32 @@ public class PhotoEditorUiTest {
         assertEquals(1280,Math.max(decoded.getWidth(),decoded.getHeight()));
         assertEquals(Bitmap.Config.ARGB_8888,decoded.getConfig());
         assertEquals(255,Color.alpha(decoded.getPixel(10,10)));
+    }
+
+    @Test public void perspectiveToggleRerendersTheSelectedTabletop() throws Exception {
+        source();
+        try (ActivityController<PhotoEditorActivity> controller =
+                     Robolectric.buildActivity(PhotoEditorActivity.class).setup().visible()) {
+            PhotoEditorActivity activity = controller.get();
+            waitIdle(activity);
+            View root = (View) field(activity, "root");
+            root.findViewWithTag("tool:background").performClick();
+            android.widget.Switch perspective = root.findViewWithTag("editor:perspective");
+            assertFalse(perspective.isShown());
+            root.findViewWithTag("wood").performClick();
+            waitIdle(activity);
+            assertTrue(perspective.isShown());
+            assertTrue(perspective.isChecked());
+            assertTrue(PreviewRenderer.lastAngle);
+            perspective.performClick();
+            waitIdle(activity);
+            assertFalse(PreviewRenderer.lastAngle);
+            assertEquals("wood", PreviewRenderer.lastBackground);
+            Bundle state = new Bundle();
+            activity.onSaveInstanceState(state);
+            assertFalse(state.getBoolean("angledBackground", true));
+            shot(root, "editor-tabletop");
+        }
     }
 
     @Test public void transparentFailureKeepsEditWithoutOpeningBrush()throws Exception{

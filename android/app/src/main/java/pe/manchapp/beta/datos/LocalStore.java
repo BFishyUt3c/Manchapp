@@ -28,27 +28,194 @@ public final class LocalStore {
     synchronized JSONObject publicCatalog(){JSONObject result=copy(data);result.remove("orders");result.remove("pending");result.remove("nextLocalNumber");result.remove("restockRequests");return result;}
     synchronized void saveSchedule(JSONArray productIds,JSONObject schedule)throws Exception{JSONObject before=copy(data);try{if(productIds==null||productIds.length()==0)throw new IOException("Elige al menos un producto para esta venta.");JSONArray products=data.getJSONArray("products");int changed=0;for(int i=0;i<products.length();i++){JSONObject product=products.getJSONObject(i);boolean selected=false;for(int j=0;j<productIds.length();j++)if(product.optString("id").equals(productIds.optString(j)))selected=true;if(!selected)continue;for(String key:SaleSchedule.KEYS)product.put(key,schedule.get(key));product.put("version",product.optInt("version")+1);changed++;}if(changed==0)throw new IOException("No encontramos los productos elegidos.");JSONObject settings=data.getJSONObject("settings");for(String key:SaleSchedule.KEYS)settings.put(key,schedule.get(key));settings.put("demo",false);save();}catch(Exception error){data=before;throw error;}}
     synchronized void deleteProduct(String id)throws Exception{JSONObject before=copy(data);try{JSONArray kept=new JSONArray(),products=data.optJSONArray("products");boolean found=false;for(int i=0;products!=null&&i<products.length();i++){JSONObject product=products.getJSONObject(i);if(product.optString("id").equals(id)){found=true;continue;}kept.put(product);}if(!found)throw new IOException("Este producto ya no existe.");JSONArray promosKept=new JSONArray(),promos=data.optJSONArray("promos");for(int i=0;promos!=null&&i<promos.length();i++)if(!promos.getJSONObject(i).optString("productId").equals(id))promosKept.put(promos.getJSONObject(i));JSONArray pendingKept=new JSONArray(),pending=data.optJSONArray("pending");for(int i=0;pending!=null&&i<pending.length();i++)if(!pending.getJSONObject(i).optJSONObject("data").optString("id").equals(id))pendingKept.put(pending.getJSONObject(i));data.put("products",kept).put("promos",promosKept).put("pending",pendingKept);save();}catch(Exception error){data=before;throw error;}}
-    synchronized JSONObject receiveDeviceOrder(JSONObject request)throws Exception{
-        String requestId=request.optString("requestId",request.optString("id")).trim();
-        if(requestId.isEmpty())throw new IOException("La solicitud no tiene identificador de envío.");
-        JSONArray orders=data.optJSONArray("orders");
-        JSONObject quantities=new JSONObject();JSONArray incoming=request.optJSONArray("items");for(int i=0;incoming!=null&&i<incoming.length();i++)quantities.put(incoming.getJSONObject(i).optString("productId"),incoming.getJSONObject(i).optInt("quantity"));
-        JSONObject candidate=OrderDraft.build(snapshot(),request,quantities,false,System.currentTimeMillis());
-        String incomingHash=request.optString("requestHash",candidate.optString("requestHash"));
-        for(int i=0;orders!=null&&i<orders.length();i++){
-            JSONObject existing=orders.getJSONObject(i);
-            if(!existing.optString("requestId").equals(requestId))continue;
-            String existingHash=existing.optString("requestHash");
-            if(!existingHash.isEmpty()&&!incomingHash.isEmpty()&&!existingHash.equals(incomingHash))throw new IOException("Este identificador ya corresponde a otro pedido.");
+    synchronized JSONObject receiveDeviceOrder(JSONObject request) throws Exception {
+        String requestId = request.optString("requestId", request.optString("id")).trim();
+        if (requestId.isEmpty()) throw new IOException("La solicitud no tiene identificador de envío.");
+        JSONArray orders = data.getJSONArray("orders");
+        String incomingHash = request.optString("requestHash");
+        for (int i = 0; i < orders.length(); i++) {
+            JSONObject existing = orders.getJSONObject(i);
+            if (!existing.optString("requestId").equals(requestId)) continue;
+            String existingHash = existing.optString("requestHash");
+            if (!existingHash.isEmpty() && !incomingHash.isEmpty() && !existingHash.equals(incomingHash)) {
+                throw new IOException("Este identificador ya corresponde a otro pedido.");
+            }
             return copy(existing);
         }
-        JSONObject order=candidate,before=copy(data);try{order.put("requestId",requestId).put("requestHash",incomingHash).put("number",data.optInt("nextLocalNumber",1)).put("status","registered").put("sendState","sent").put("version",1).put("localOnly",false);JSONArray products=data.getJSONArray("products"),items=order.getJSONArray("items");for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);for(int j=0;j<products.length();j++){JSONObject product=products.getJSONObject(j);if(product.optString("id").equals(item.optString("productId"))){if(product.optInt("stock")<item.optInt("quantity"))throw new IOException("Ya no quedan cupos suficientes para este producto.");product.put("stock",product.optInt("stock")-item.optInt("quantity")).put("version",product.optInt("version")+1);}}}if(orders==null)orders=new JSONArray();orders.put(order);data.put("orders",orders).put("nextLocalNumber",order.optInt("number")+1);save();return copy(order);}catch(Exception error){data=before;throw error;}}
+
+        JSONObject quantities = new JSONObject();
+        JSONArray incoming = request.optJSONArray("items");
+        for (int i = 0; incoming != null && i < incoming.length(); i++) {
+            JSONObject item = incoming.getJSONObject(i);
+            quantities.put(item.getString("productId"), item.get("quantity"));
+        }
+        JSONObject order = OrderDraft.build(snapshot(), request, quantities, false, System.currentTimeMillis());
+        JSONObject expected = request.optJSONObject("expected");
+        JSONObject current = order.getJSONObject("expected");
+        if (expected != null && (!expected.optString("saleKey").equals(current.getString("saleKey"))
+                || !expected.optString("pickup").equals(current.getString("pickup"))
+                || Math.abs(expected.optDouble("subtotal", -1) - current.getDouble("subtotal")) > 0.001
+                || Math.abs(expected.optDouble("fee", -1) - current.getDouble("fee")) > 0.001
+                || Math.abs(expected.optDouble("total", -1) - current.getDouble("total")) > 0.001)) {
+            throw new IOException("Cambió la fecha, el precio o la entrega. Revisa el pedido antes de enviarlo.");
+        }
+
+        JSONObject before = copy(data);
+        try {
+            order.put("requestId", requestId).put("number", data.optInt("nextLocalNumber", 1))
+                    .put("status", "confirmed").put("sendState", "sent").put("version", 1).put("localOnly", false);
+            if (!incomingHash.isEmpty()) order.put("requestHash", incomingHash);
+            JSONArray products = data.getJSONArray("products");
+            JSONArray items = order.getJSONArray("items");
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject item = items.getJSONObject(i);
+                for (int j = 0; j < products.length(); j++) {
+                    JSONObject product = products.getJSONObject(j);
+                    if (!product.optString("id").equals(item.optString("productId"))) continue;
+                    int quantity = item.optInt("quantity");
+                    if (product.optInt("stock") < quantity) {
+                        throw new IOException("Ya no quedan cupos suficientes para este producto.");
+                    }
+                    product.put("stock", product.optInt("stock") - quantity)
+                            .put("version", product.optInt("version") + 1);
+                }
+            }
+            orders.put(order);
+            data.put("nextLocalNumber", order.optInt("number") + 1);
+            save();
+            return copy(order);
+        } catch (Exception error) {
+            data = before;
+            throw error;
+        }
+    }
     synchronized JSONObject deviceOrder(String id)throws Exception{JSONArray orders=data.optJSONArray("orders");for(int i=0;orders!=null&&i<orders.length();i++){JSONObject order=orders.getJSONObject(i);if(order.optString("id").equals(id)||order.optString("requestId").equals(id))return copy(order);}throw new IOException("No encontramos este pedido en Manka Kusi.");}
-    synchronized JSONObject requestMore(JSONObject request)throws Exception{String id=request.optString("requestId");JSONArray items=request.optJSONArray("items");if(id.isEmpty()||items==null||items.length()==0)throw new IOException("La solicitud de más ventas está incompleta.");JSONArray all=data.optJSONArray("restockRequests");if(all==null)all=new JSONArray();for(int i=0;i<all.length();i++)if(all.getJSONObject(i).optString("id").equals(id))return copy(all.getJSONObject(i));JSONObject entry=new JSONObject().put("id",id).put("customer",request.optString("customer")).put("phone",request.optString("phone")).put("items",new JSONArray(items.toString())).put("createdAt",System.currentTimeMillis()).put("status","pending");JSONObject before=copy(data);try{all.put(entry);data.put("restockRequests",all);save();return copy(entry);}catch(Exception error){data=before;throw error;}}
-    synchronized void resolveRestock(String id,int units,boolean approve)throws Exception{JSONArray all=data.optJSONArray("restockRequests");JSONObject request=null;for(int i=0;all!=null&&i<all.length();i++)if(all.getJSONObject(i).optString("id").equals(id))request=all.getJSONObject(i);if(request==null)throw new IOException("No encontramos esta solicitud.");if(!request.optString("status").equals("pending"))throw new IOException("Esta solicitud ya fue revisada.");JSONObject before=copy(data);try{int amount=Math.max(1,Math.min(99,units));if(approve){JSONArray products=data.optJSONArray("products"),items=request.optJSONArray("items");for(int i=0;items!=null&&i<items.length();i++){String productId=items.getJSONObject(i).optString("productId");for(int j=0;products!=null&&j<products.length();j++){JSONObject product=products.getJSONObject(j);if(product.optString("id").equals(productId)){product.put("stock",Math.min(9999,product.optInt("stock")+amount)).put("available",true).put("version",product.optInt("version")+1);}}}}request.put("status",approve?"approved":"rejected").put("addedUnits",approve?amount:0).put("resolvedAt",System.currentTimeMillis());save();}catch(Exception error){data=before;throw error;}}
+    synchronized JSONObject requestMore(JSONObject request) throws Exception {
+        String id = request.optString("requestId").trim();
+        JSONArray items = request.optJSONArray("items");
+        String name = request.optString("customer").trim(), phone = request.optString("phone");
+        if (id.isEmpty() || items == null || items.length() == 0 || items.length() > 30
+                || name.length() < 2 || !SaleRules.validPhone(phone)) {
+            throw new IOException("Completa los datos de la solicitud de cupos extra.");
+        }
+        JSONArray all = data.getJSONArray("restockRequests");
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject existing = all.getJSONObject(i);
+            if (id.equals(existing.optString("id"))) return copy(existing);
+        }
+        JSONArray products = data.getJSONArray("products");
+        JSONArray requested = new JSONArray();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.getJSONObject(i);
+            String productId = item.optString("productId");
+            int quantity = item.optInt("quantity");
+            JSONObject product = null;
+            for (int j = 0; j < products.length(); j++) {
+                JSONObject candidate = products.getJSONObject(j);
+                if (productId.equals(candidate.optString("id"))) {
+                    product = candidate;
+                    break;
+                }
+            }
+            if (product == null || !product.optString("line").equals("commercial")
+                    || quantity < 1 || quantity > 99 || !seen.add(productId)) {
+                throw new IOException("Revisa los productos y las cantidades de la solicitud.");
+            }
+            requested.put(new JSONObject().put("productId", productId)
+                    .put("name", product.optString("name")).put("quantity", quantity));
+        }
+        JSONObject entry = new JSONObject().put("id", id).put("customer", name).put("phone", phone)
+                .put("saleDate", request.optString("saleDate")).put("items", requested)
+                .put("fulfillment", request.optString("fulfillment", "pickup"))
+                .put("address", request.optString("address")).put("reference", request.optString("reference"))
+                .put("baseRequestId", request.optString("baseRequestId"))
+                .put("createdAt", System.currentTimeMillis()).put("status", "pending");
+        JSONObject before = copy(data);
+        try {
+            all.put(entry);
+            save();
+            return copy(entry);
+        } catch (Exception error) {
+            data = before;
+            throw error;
+        }
+    }
+
+    synchronized JSONObject extraRequest(String id) throws Exception {
+        return copy(findExtraRequest(id));
+    }
+
+    private JSONObject findExtraRequest(String id) throws Exception {
+        JSONArray all = data.getJSONArray("restockRequests");
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject request = all.getJSONObject(i);
+            if (id.equals(request.optString("id"))) return request;
+        }
+        throw new IOException("No encontramos esta solicitud.");
+    }
+
+    synchronized JSONObject extraDeliveryOrder(JSONObject request) throws Exception {
+        String baseId = request.optString("baseRequestId");
+        if (baseId.isEmpty()) return null;
+        JSONArray orders = data.getJSONArray("orders");
+        for (int i = 0; i < orders.length(); i++) {
+            JSONObject order = orders.getJSONObject(i);
+            if (!baseId.equals(order.optString("requestId"))) continue;
+            String status = order.optString("status");
+            if (!java.util.Arrays.asList("confirmed", "preparing", "ready", "sale_day").contains(status)
+                    || !order.optString("saleDate").equals(request.optString("saleDate"))
+                    || !order.optString("fulfillment").equals(request.optString("fulfillment"))
+                    || !order.optString("address").trim().equals(request.optString("address").trim())) return null;
+            return copy(order);
+        }
+        return null;
+    }
+
+    static JSONArray deliveryExtras(JSONObject state, String orderId) {
+        JSONArray all = state.optJSONArray("restockRequests"), selected = new JSONArray();
+        for (int i = 0; all != null && i < all.length(); i++) {
+            JSONObject extra = all.optJSONObject(i);
+            if (extra != null && "approved".equals(extra.optString("status"))
+                    && orderId.equals(extra.optString("sameDeliveryOrderId"))) selected.put(extra);
+        }
+        return selected;
+    }
+
+    synchronized void resolveExtraRequest(String id, boolean approve, double amount, boolean sameDelivery) throws Exception {
+        JSONObject request = findExtraRequest(id);
+        if (!request.optString("status").equals("pending")) {
+            throw new IOException("Esta solicitud ya fue revisada.");
+        }
+        if (approve && (!Double.isFinite(amount) || amount < 0 || amount > 99999.99
+                || Math.abs(amount - SaleRules.money(amount)) > .000001)) {
+            throw new IOException("Ingresa un monto válido con hasta dos decimales.");
+        }
+        JSONObject base = approve && sameDelivery ? extraDeliveryOrder(request) : null;
+        if (approve && sameDelivery && base == null) throw new IOException("El pedido original ya no admite esta entrega.");
+        JSONObject before = copy(data);
+        try {
+            request.put("status", approve ? "approved" : "rejected").put("resolvedAt", System.currentTimeMillis());
+            if (approve) {
+                request.put("extraAmount", SaleRules.money(amount));
+                if (base != null) request.put("sameDeliveryOrderId", base.getString("id"))
+                        .put("sameDeliveryOrderNumber", base.getInt("number"));
+            }
+            save();
+        } catch (Exception error) {
+            data = before;
+            throw error;
+        }
+    }
+
     public synchronized void enqueue(String type, JSONObject value) throws Exception {
         JSONObject before=copy(data);
         try { JSONArray pending=data.optJSONArray("pending"); if(pending==null) pending=new JSONArray();
+            if (type.equals("order") && isDemoOrder(value.optString("id"))) {
+                overlay(new JSONObject().put("type", type).put("data", copy(value)));
+                save();
+                return;
+            }
             if(type.equals("product"))for(int i=0;i<pending.length();i++){
                 JSONObject old=pending.getJSONObject(i);
                 if(old.optString("type").equals(type)&&old.getJSONObject("data").optString("id").equals(value.optString("id"))&&old.has("attempted")&&!old.optBoolean("attempted")){
@@ -64,9 +231,30 @@ public final class LocalStore {
         if(type.equals("settings")) { JSONObject s=data.getJSONObject("settings"); java.util.Iterator<String> keys=value.keys(); while(keys.hasNext()){String k=keys.next();s.put(k,value.get(k));} return; }
         String array=type.equals("product")?"products":type.equals("promo")?"promos":"orders";
         JSONArray all=data.optJSONArray(array); if(all==null)all=new JSONArray(); boolean found=false;
-        for(int i=0;i<all.length();i++) if(all.getJSONObject(i).optString("id").equals(value.optString("id"))) { if(type.equals("order")){JSONObject o=all.getJSONObject(i);String previous=o.optString("status"),target=value.optString("status",previous);if(target.equals("cancelled")&&!previous.equals("cancelled")){JSONArray products=data.optJSONArray("products"),items=o.optJSONArray("items");for(int p=0;products!=null&&p<products.length();p++)for(int j=0;items!=null&&j<items.length();j++)if(products.getJSONObject(p).optString("id").equals(items.getJSONObject(j).optString("productId")))products.getJSONObject(p).put("stock",products.getJSONObject(p).optInt("stock")+items.getJSONObject(j).optInt("quantity"));}java.util.Iterator<String> it=value.keys();while(it.hasNext()){String k=it.next();o.put(k,value.get(k));}o.put("version",value.optInt("version")+1);o.put("sendState","sent");}else if(!type.equals("manualOrder"))all.put(i,copy(value)); found=true; break; }
+        for(int i=0;i<all.length();i++) if(all.getJSONObject(i).optString("id").equals(value.optString("id"))) { if(type.equals("order")){JSONObject o=all.getJSONObject(i);String previous=o.optString("status"),target=value.optString("status",previous);if(target.equals("cancelled")&&!previous.equals("cancelled"))restoreOrderStock(o);java.util.Iterator<String> it=value.keys();while(it.hasNext()){String k=it.next();o.put(k,value.get(k));}o.put("version",value.optInt("version")+1);o.put("sendState","sent");}else if(!type.equals("manualOrder"))all.put(i,copy(value)); found=true; break; }
         if(!found){JSONObject local=copy(value);if(type.equals("manualOrder")){local.put("sendState","sent").put("localOnly",true);JSONArray products=data.optJSONArray("products"),items=local.optJSONArray("items");for(int i=0;products!=null&&i<products.length();i++)for(int j=0;items!=null&&j<items.length();j++)if(products.getJSONObject(i).optString("id").equals(items.getJSONObject(j).optString("productId")))products.getJSONObject(i).put("stock",Math.max(0,products.getJSONObject(i).optInt("stock")-items.getJSONObject(j).optInt("quantity")));}all.put(local);} data.put(array,all);
     }
+    private void restoreOrderStock(JSONObject order) throws JSONException {
+        if (order.optBoolean("demoOrder")) return;
+        JSONObject expected = order.optJSONObject("expected");
+        String reservedSale = expected == null ? SaleSchedule.key(order)
+                : expected.optString("saleKey", SaleSchedule.key(order));
+        if (reservedSale.equals("//")) return;
+        JSONObject settings = data.optJSONObject("settings");
+        JSONArray products = data.optJSONArray("products");
+        JSONArray items = order.optJSONArray("items");
+        for (int p = 0; products != null && p < products.length(); p++) {
+            JSONObject product = products.getJSONObject(p);
+            if (!reservedSale.equals(SaleSchedule.key(SaleSchedule.forProduct(product, settings)))) continue;
+            for (int i = 0; items != null && i < items.length(); i++) {
+                JSONObject item = items.getJSONObject(i);
+                if (!product.optString("id").equals(item.optString("productId"))) continue;
+                product.put("stock", product.optInt("stock") + item.optInt("quantity"))
+                        .put("version", product.optInt("version") + 1);
+            }
+        }
+    }
+
     synchronized void assignDispatch(String date, String driver, java.util.Map<String, Integer> selected) throws Exception {
         if (driver.length() < 2 || driver.length() > 80 || selected.isEmpty() || SaleSchedule.parse(date, true) < 0) {
             throw new IOException("Elige una fecha, un repartidor y al menos un pedido.");
@@ -87,10 +275,71 @@ public final class LocalStore {
                 JSONObject change = OrderScreen.orderChange(order).put("driver", driver);
                 JSONObject operation = new JSONObject().put("id", UUID.randomUUID().toString())
                         .put("type", "order").put("data", change).put("attempted", false);
-                pending.put(operation);
+                if (!order.optBoolean("demoOrder")) pending.put(operation);
                 overlay(operation);
             }
             save();
+        } catch (Exception error) {
+            data = before;
+            throw error;
+        }
+    }
+
+    private boolean isDemoOrder(String id) {
+        JSONArray orders = data.optJSONArray("orders");
+        for (int i = 0; orders != null && i < orders.length(); i++) {
+            JSONObject order = orders.optJSONObject(i);
+            if (order != null && id.equals(order.optString("id"))) return order.optBoolean("demoOrder");
+        }
+        return false;
+    }
+
+    synchronized String addDemoDeliveries() throws Exception {
+        JSONObject before = copy(data);
+        try {
+            long now = System.currentTimeMillis();
+            JSONObject settings = data.getJSONObject("settings");
+            String date = settings.optString("saleDate");
+            if (SaleSchedule.parse(date, true) < 0) date = SaleSchedule.date(now);
+            JSONArray orders = data.getJSONArray("orders");
+            JSONArray zones = settings.optJSONArray("zones");
+            java.util.List<JSONObject> enabledZones = new java.util.ArrayList<>();
+            for (int i = 0; zones != null && i < zones.length(); i++) {
+                JSONObject zone = zones.optJSONObject(i);
+                if (zone != null && zone.optBoolean("enabled")) enabledZones.add(zone);
+            }
+            int number = data.optInt("nextLocalNumber", 1);
+            String[] streets = {"Av. de Ejemplo", "Jr. de Prueba", "Pasaje Demo"};
+            String[] references = {"Portón azul", "Frente al parque", "Al lado de la bodega"};
+            for (int i = 0; i < 10; i++) {
+                int sector = i % streets.length;
+                JSONObject zone = enabledZones.isEmpty() ? null : enabledZones.get(i % enabledZones.size());
+                double fee = zone == null ? 3 : zone.optDouble("fee", 3);
+                int quantity = 1 + i % 3;
+                boolean confirmed = i < 7;
+                boolean paid = confirmed && i % 3 == 0;
+                String id = "demo-" + UUID.randomUUID();
+                JSONObject item = new JSONObject().put("productId", "demo-menu")
+                        .put("name", "Menú de prueba").put("quantity", quantity).put("price", 8);
+                JSONObject order = new JSONObject().put("id", id).put("requestId", id)
+                        .put("number", number++).put("version", 1).put("createdAt", now)
+                        .put("demoOrder", true).put("localOnly", true).put("sendState", "sent")
+                        .put("customer", "Cliente de prueba " + (i + 1)).put("phone", "000000000")
+                        .put("fulfillment", "delivery").put("source", "whatsapp").put("destinationType", "home")
+                        .put("address", streets[sector] + " " + (100 + 11 * i))
+                        .put("reference", references[sector]).put("deliveryWindow", confirmed ? "4:00 a 6:00 p. m." : "")
+                        .put("zoneId", zone == null ? "demo-" + sector : zone.optString("id"))
+                        .put("zone", zone == null ? "Sector de prueba " + (sector + 1) : zone.optString("name"))
+                        .put("status", confirmed ? "confirmed" : "registered")
+                        .put("payment", paid ? "yape" : "cash").put("paid", paid)
+                        .put("items", new JSONArray().put(item)).put("subtotal", quantity * 8)
+                        .put("fee", fee).put("total", SaleRules.money(quantity * 8 + fee));
+                if (!confirmed) order.put("demoReviewReason", "El cliente pidió una entrega fuera del horario habitual.");
+                orders.put(SaleSchedule.copyInto(order, settings).put("saleDate", date));
+            }
+            data.put("nextLocalNumber", number);
+            save();
+            return date;
         } catch (Exception error) {
             data = before;
             throw error;

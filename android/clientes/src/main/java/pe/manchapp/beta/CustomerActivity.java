@@ -12,6 +12,7 @@ import android.text.InputType;
 import android.view.*;
 import android.widget.*;
 import org.json.*;
+import java.io.IOException;
 import java.text.NumberFormat;
 import java.util.*;
 import java.util.concurrent.*;
@@ -26,6 +27,9 @@ public class CustomerActivity extends Activity {
     private LinearLayout root,content,footer;
     private LinearLayout summary;
     private ScrollView scroll;
+    private final Map<String, Integer> shoppingScroll = new HashMap<>();
+    private final List<Runnable> quantityRefreshers = new ArrayList<>();
+    private TextView cartTab, shoppingAction, cartSubtotal;
     private String screen="food",lastRenderedScreen="",category="Todo",selectedId="";
     private final ArrayList<String> history=new ArrayList<>();
     private int step=0;
@@ -67,7 +71,7 @@ public class CustomerActivity extends Activity {
     private JSONObject state(){return viewState==null?store.snapshot():viewState;}
     private JSONObject catalog(){return state().optJSONObject("catalog");}
     private JSONObject baseSettings(){return catalog().optJSONObject("settings");}
-    private JSONObject settings(){JSONObject selected=product(selectedId);if(selected!=null)return SaleSchedule.forProduct(selected,baseSettings());if(store.count()>0)return store.currentSale();return baseSettings();}
+    private JSONObject settings(){JSONObject selected=product(selectedId);if(selected!=null)return SaleSchedule.forProduct(selected,baseSettings());if(store.shoppingCount()>0)return store.currentSale();return baseSettings();}
     private String cash(double n){return currency.format(n);}
     private void put(JSONObject object,String name,Object value){try{object.put(name,value);}catch(JSONException error){throw new IllegalStateException(error);}}
     private JSONObject product(String id){JSONArray products=catalog().optJSONArray("products");for(int i=0;i<products.length();i++)if(products.optJSONObject(i).optString("id").equals(id))return products.optJSONObject(i);return null;}
@@ -79,50 +83,120 @@ public class CustomerActivity extends Activity {
     private void title(String title,String subtitle){add(content,ui.heading(title,26),0);if(!subtitle.isEmpty())add(content,ui.text(subtitle,14,NativeUi.MUTED,false),5);}
     private void note(String text){add(content,ui.text(text,14,NativeUi.MUTED,false),12);}
     private void primary(String text,Runnable action){footer.setVisibility(View.VISIBLE);footer.removeAllViews();footer.addView(ui.button(text,true,null,action),new LinearLayout.LayoutParams(-1,-2));}
-    private String activeTab(){if(screen.equals("detail"))return "food";if(screen.equals("checkout"))return "cart";if(screen.equals("receipt"))return "orders";return screen;}
+    private String activeTab(){if(screen.equals("detail"))return "food";if(screen.equals("checkout"))return "cart";if(screen.equals("receipt")||screen.equals("extras"))return "orders";return screen;}
     private boolean rootScreen(){return Arrays.asList("food","offers","cart","orders").contains(screen);}
-    private boolean isOffline(){try{android.net.ConnectivityManager cm=(android.net.ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);if(cm==null)return false;android.net.NetworkInfo info=cm.getActiveNetworkInfo();return info==null||!info.isConnected();}catch(Exception ignored){return false;}}
+    private boolean catalogScreen(String destination) {
+        return destination.equals("food") || destination.equals("offers");
+    }
     private void render(){
-        int prevScrollY=scroll!=null&&screen.equals(lastRenderedScreen)?scroll.getScrollY():0;
+        if (scroll != null && (catalogScreen(lastRenderedScreen) || lastRenderedScreen.equals("cart"))) {
+            shoppingScroll.put(lastRenderedScreen, scroll.getScrollY());
+        }
+        int prevScrollY = scroll != null && screen.equals(lastRenderedScreen)
+                ? scroll.getScrollY() : shoppingScroll.getOrDefault(screen, 0);
+        quantityRefreshers.clear();
+        cartTab = null;
+        shoppingAction = null;
+        cartSubtotal = null;
         handler.removeCallbacks(saveDetailsDraft);viewState=store.snapshot();fields.clear();root=ui.column();root.setBackgroundColor(NativeUi.BG);setContentView(root);
-        String heading=rootScreen()?"ManchApp":screen.equals("detail")?"Tu antojo":screen.equals("checkout")?"Arma tu pedido":"Tu pedido";
-        root.addView(ui.toolbar(heading,rootScreen()?"PEDIDOS · MANKA KUSI":"",rootScreen()?null:()->onBackPressed(),null));
-        int pendingCount=store.pending().length();boolean offline=isOffline();
-        if(offline||!syncMessage.isEmpty()||pendingCount>0){
-            String msg=offline?"Sin internet · pedidos guardados localmente":!syncMessage.isEmpty()?syncMessage:pendingCount+" pedido(s) por enviar a Emprendedora";
-            LinearLayout bar=new LinearLayout(this);bar.setBackgroundColor(offline||!syncMessage.isEmpty()?NativeUi.GOLD:NativeUi.SOFT);bar.setPadding(dp(16),dp(6),dp(16),dp(6));bar.setGravity(Gravity.CENTER_VERTICAL);
+        String heading=rootScreen()?"ManchApp":screen.equals("detail")?"Producto":screen.equals("checkout")?"Arma tu pedido":"Tu pedido";
+        root.addView(ui.toolbar(heading,rootScreen()?baseSettings().optString("name","Manka Kusi"):"",rootScreen()?null:()->onBackPressed(),null));
+        int pendingCount=store.pending().length();
+        JSONArray extraPending = store.extraRequestsToSync();
+        for (int i = 0; i < extraPending.length(); i++) {
+            if (!"sent".equals(extraPending.optJSONObject(i).optString("sendState"))) pendingCount++;
+        }
+        if(!syncMessage.isEmpty()||pendingCount>0){
+            String msg = pendingCount == 0 ? "Mostrando el catálogo guardado" : pendingCount == 1
+                    ? "1 envío pendiente" : pendingCount + " envíos pendientes";
+            LinearLayout bar=new LinearLayout(this);bar.setBackgroundColor(pendingCount>0?NativeUi.GOLD:NativeUi.SOFT);bar.setPadding(dp(16),dp(4),dp(16),dp(4));bar.setGravity(Gravity.CENTER_VERTICAL);
             TextView label=ui.text(msg,12,NativeUi.INK,true);bar.addView(label,new LinearLayout.LayoutParams(0,-2,1));
             if(pendingCount>0||!syncMessage.isEmpty()){TextView retry=ui.text(syncing?"…":"Reintentar",12,NativeUi.WINE,true);retry.setPadding(dp(10),dp(4),0,dp(4));retry.setOnClickListener(v->syncDevice(true));bar.addView(retry);}
             root.addView(bar,new LinearLayout.LayoutParams(-1,-2));
         }
         scroll=new ScrollView(this);scroll.setFillViewport(true);content=ui.column();content.setPadding(dp(16),dp(16),dp(16),dp(22));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        if(prevScrollY>0){final ScrollView activeScroll=scroll;activeScroll.post(()->activeScroll.scrollTo(0,prevScrollY));}
+        if (prevScrollY > 0) {
+            ScrollView activeScroll = scroll;
+            activeScroll.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                @Override public void onLayoutChange(View view, int left, int top, int right, int bottom,
+                                                     int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                    activeScroll.removeOnLayoutChangeListener(this);
+                    activeScroll.scrollTo(0, prevScrollY);
+                }
+            });
+        }
         lastRenderedScreen=screen;
         footer=ui.column();footer.setPadding(dp(16),dp(8),dp(16),dp(9));footer.setVisibility(View.GONE);root.addView(footer);
-        switch(screen){case "food":showFood();break;case "offers":showOffers();break;case "cart":showCart();break;case "detail":showProduct();break;case "checkout":showCheckout();break;case "orders":showOrders();break;case "receipt":showReceipt();break;default:screen="food";showFood();}
-        int count=store.count();root.addView(ui.navigation(new String[]{"food","offers","cart","orders"},new String[]{"Comida","Ofertas",count>0?"Carrito · "+count:"Carrito","Pedidos"},new String[]{"food","tag","cart","orders"},activeTab(),id->go(id,"")));
+        switch(screen){case "food":showFood();break;case "offers":showOffers();break;case "cart":showCart();break;case "detail":showProduct();break;case "checkout":showCheckout();break;case "orders":showOrders();break;case "receipt":showReceipt();break;case "extras":showExtrasReceipt();break;default:screen="food";showFood();}
+        if (catalogScreen(screen) || screen.equals("detail")) {
+            shoppingAction = ui.button("Ver carrito", true, "cart", () -> go("cart", ""));
+            shoppingAction.setTag("shopping:cart");
+            footer.addView(shoppingAction, new LinearLayout.LayoutParams(-1, -2));
+        }
+        LinearLayout navigation = ui.navigation(new String[]{"food","offers","cart","orders"},
+                new String[]{"Catálogo","Ofertas","Carrito","Pedidos"}, new String[]{"food","tag","cart","orders"},
+                activeTab(), id -> { if (!id.equals(screen)) go(id, ""); });
+        for (int i = 0; i < navigation.getChildCount(); i++) {
+            TextView tab = (TextView) navigation.getChildAt(i);
+            tab.setSingleLine(false);
+            tab.setMaxLines(1);
+            tab.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        }
+        cartTab = (TextView) navigation.getChildAt(2);
+        root.addView(navigation);
+        refreshShoppingActions();
     }
     private ImageView image(JSONObject product,int edge){ImageView view=new ImageView(this);view.setScaleType(ImageView.ScaleType.CENTER_CROP);view.setBackground(ui.background(0xffeabe83,0,15));view.setClipToOutline(true);Bitmap bitmap=images.productThumbnail(this,product,dp(edge));if(bitmap!=null)view.setImageBitmap(bitmap);else view.setImageDrawable(new DishArt(product.optString("illustration","papa")));view.setContentDescription((bitmap==null?"Ilustración referencial de ":"Foto de ")+product.optString("name"));return view;}
     private boolean accepting(){return SaleSchedule.unavailable(settings(),System.currentTimeMillis()).isEmpty();}
     private boolean accepting(JSONObject product){return SaleSchedule.unavailable(SaleSchedule.forProduct(product,baseSettings()),System.currentTimeMillis()).isEmpty();}
     private void saleCard(){JSONObject saleSettings=settings();String closed=SaleSchedule.unavailable(saleSettings,System.currentTimeMillis());LinearLayout sale=ui.message("VENTA PROGRAMADA",SaleSchedule.day(saleSettings),NativeUi.GOLD);add(sale,ui.text(SaleSchedule.shortWindow(saleSettings),14,NativeUi.INK,true),9);add(sale,ui.text(closed.isEmpty()?"Reservas hasta "+SaleSchedule.deadline(saleSettings):closed,14,NativeUi.WINE,true),9);add(content,sale,13);}
-    private void showFood(){
-        nextSaleBanner();
-        add(content,ui.heading("Productos de Manka Kusi",27),14);add(content,ui.text("Reserva los productos anunciados para cada fecha de venta.",14,NativeUi.MUTED,false),5);
-        announcedProducts();
+    private void showFood() {
+        LinearLayout header = ui.column();
+        header.setPadding(dp(16), dp(10), dp(16), dp(8));
+        header.setBackgroundColor(NativeUi.BG);
+        root.addView(header, root.indexOfChild(scroll), new LinearLayout.LayoutParams(-1, -2));
+        add(header, ui.heading("Catálogo", 24), 0);
+        nextSaleBanner(header);
+        content.setPadding(dp(16), 0, dp(16), dp(18));
+        List<JSONObject> products = catalogProducts(false);
+        if (products.isEmpty()) {
+            empty("Todavía no hay productos para la próxima venta", "Vuelve cuando la olla anuncie una nueva jornada.");
+            return;
+        }
+        categoryFilter(header, products);
+        showFilteredProducts(products);
     }
-    private void nextSaleBanner(){
-        JSONObject s=baseSettings();if(s==null)return;
-        String closed=SaleSchedule.unavailable(s,System.currentTimeMillis());
-        LinearLayout banner=ui.message("PRÓXIMA VENTA · "+SaleSchedule.day(s),
-                SaleSchedule.shortWindow(s)+"\n"+(closed.isEmpty()?"Reservas abiertas hasta "+SaleSchedule.deadline(s):closed),
-                NativeUi.GOLD);
-        LinearLayout actions=new LinearLayout(this);
-        TextView remind=ui.button("Recordar",false,"clock",()->addSaleReminder(s));remind.setTextSize(13);
-        TextView offersBtn=ui.button("Ver ofertas",false,"tag",()->go("offers",""));offersBtn.setTextSize(13);
-        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);lp.rightMargin=dp(8);
-        actions.addView(remind,lp);actions.addView(offersBtn,new LinearLayout.LayoutParams(0,-2,1));
-        add(banner,actions,10);add(content,banner,0);
+
+    private void showFilteredProducts(List<JSONObject> products) {
+        content.removeAllViews();
+        quantityRefreshers.clear();
+        for (JSONObject product : products) {
+            if (category.equals("Todo") || product.optString("category").trim().equalsIgnoreCase(category)) {
+                productCard(product);
+            }
+        }
+    }
+
+    private void nextSaleBanner(LinearLayout parent) {
+        JSONObject sale = baseSettings();
+        String closed = SaleSchedule.unavailable(sale, System.currentTimeMillis());
+        LinearLayout banner = new LinearLayout(this);
+        banner.setGravity(Gravity.CENTER_VERTICAL);
+        banner.setPadding(dp(12), dp(9), dp(8), dp(9));
+        banner.setBackground(ui.background(NativeUi.SOFT, 0, 14));
+        LinearLayout info = ui.column();
+        add(info, ui.text("Próxima venta", 12, NativeUi.WINE, true), 0);
+        add(info, ui.text(SaleSchedule.day(sale), 14, NativeUi.INK, true), 2);
+        add(info, ui.text(closed.isEmpty() ? "Reservas hasta " + SaleSchedule.deadline(sale) : closed,
+                12, NativeUi.MUTED, false), 3);
+        banner.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView remind = ui.button("", false, "clock", () -> addSaleReminder(sale));
+        remind.setPadding(dp(12), 0, 0, 0);
+        remind.setContentDescription("Guardar fecha de venta en el calendario");
+        LinearLayout.LayoutParams button = new LinearLayout.LayoutParams(dp(48), dp(48));
+        button.leftMargin = dp(8);
+        banner.addView(remind, button);
+        add(parent, banner, 8);
     }
     private void addSaleReminder(JSONObject s){
         long start=SaleSchedule.parse(s.optString("pickupFrom"),false),end=SaleSchedule.parse(s.optString("pickupUntil"),false);
@@ -137,44 +211,372 @@ public class CustomerActivity extends Activity {
             startActivity(cal);
         }catch(Exception error){toast("No encontramos una app de calendario en este celular.");}
     }
-    private void announcedProducts(){
-        categoryFilter();
-        JSONArray products=catalog().optJSONArray("products");int announced=0,shown=0;long now=System.currentTimeMillis();for(int i=0;i<products.length();i++){JSONObject p=products.optJSONObject(i);if(!p.optString("line").equals("commercial")||!SaleSchedule.announced(p,baseSettings(),now))continue;announced++;if(!category.equals("Todo")&&!p.optString("category").equals(category))continue;productCard(p);shown++;}
-        if(announced==0)empty("Por ahora no se ha anunciado ninguna venta","Vuelve más tarde. Gracias.");else if(shown==0)empty("No hay productos de este tipo","Elige otro tipo para ver las ventas anunciadas.");
+    private List<JSONObject> catalogProducts(boolean onlyOffers) {
+        JSONArray products = catalog().optJSONArray("products");
+        Set<String> promoted = new HashSet<>();
+        JSONArray promos = catalog().optJSONArray("promos");
+        for (int i = 0; onlyOffers && promos != null && i < promos.length(); i++) {
+            JSONObject promo = promos.optJSONObject(i);
+            if (promo != null && promo.optBoolean("active")) promoted.add(promo.optString("productId"));
+        }
+        List<JSONObject> visible = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (int i = 0; products != null && i < products.length(); i++) {
+            JSONObject product = products.optJSONObject(i);
+            if (product == null || !product.optString("line").equals("commercial")
+                    || !product.optBoolean("available")) continue;
+            JSONObject sale = SaleSchedule.forProduct(product, baseSettings());
+            if (!SaleSchedule.invalid(sale).isEmpty() || !sale.optBoolean("salesOpen")
+                    || SaleSchedule.parse(sale.optString("pickupUntil"), false) <= now) continue;
+            boolean offer = product.optString("saleUnit").equalsIgnoreCase("combo")
+                    || product.optString("category").equalsIgnoreCase("combos")
+                    || promoted.contains(product.optString("id"));
+            if (!onlyOffers || offer) visible.add(product);
+        }
+        return visible;
     }
-    private void categoryFilter(){
-        LinearLayout filterRow = new LinearLayout(this);
-        filterRow.setGravity(Gravity.CENTER_VERTICAL);
-        filterRow.setBackground(ui.background(NativeUi.CARD, NativeUi.LINE, 14));
-        filterRow.setPadding(dp(16), dp(13), dp(12), dp(13));
-        filterRow.setOnClickListener(v -> {
-            String[] categories = {"Todo", "Salados", "Antojitos", "Postres", "Bebidas", "Combos"};
-            new AlertDialog.Builder(this).setTitle("Elegir categoría").setItems(categories, (d, i) -> {
-                category = categories[i];
+
+    private void categoryFilter(LinearLayout parent, List<JSONObject> products) {
+        List<String> labels = new ArrayList<>();
+        labels.add("Todo");
+        for (JSONObject product : products) {
+            String label = product.optString("category").trim();
+            if (!label.isEmpty() && labels.stream().noneMatch(label::equalsIgnoreCase)) labels.add(label);
+        }
+        if (labels.stream().noneMatch(category::equalsIgnoreCase)) category = "Todo";
+        HorizontalScrollView strip = new HorizontalScrollView(this);
+        strip.setTag("catalog:categories");
+        LinearLayout row = new LinearLayout(this);
+        strip.addView(row);
+        Map<String, TextView> chips = new LinkedHashMap<>();
+        for (String label : labels) {
+            boolean selected = label.equalsIgnoreCase(category);
+            TextView chip = ui.button(label.equals("Todo") ? "Todos" : label, false, null, () -> {
+                if (!label.equalsIgnoreCase(category)) {
+                    category = label;
+                    chips.forEach((name, item) -> styleCategory(item, name.equalsIgnoreCase(category)));
+                    showFilteredProducts(products);
+                }
+            });
+            chip.setTag("category:" + label);
+            chip.setTextSize(13);
+            chip.setMaxLines(1);
+            chip.setPadding(dp(13), 0, dp(13), 0);
+            styleCategory(chip, selected);
+            chips.put(label, chip);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(48));
+            params.rightMargin = dp(6);
+            row.addView(chip, params);
+            if (selected) strip.post(() -> strip.scrollTo(Math.max(0, chip.getLeft() - dp(8)), 0));
+        }
+        add(parent, strip, 8);
+    }
+
+    private void styleCategory(TextView chip, boolean selected) {
+        chip.setSelected(selected);
+        chip.setTextColor(selected ? NativeUi.CARD : NativeUi.WINE);
+        chip.setBackground(ui.background(selected ? NativeUi.WINE : NativeUi.CARD,
+                selected ? 0 : NativeUi.LINE, 24));
+    }
+
+    private TextView stockLabel(JSONObject product) {
+        int stock = product.optInt("stock");
+        boolean available = product.optBoolean("available") && stock > 0;
+        boolean open = accepting(product);
+        String label = !available ? "Sin cupos" : !open ? "Reservas cerradas"
+                : stock == 1 ? "Queda 1 cupo" : stock + " cupos";
+        return ui.chip(label, available && open ? NativeUi.GREEN : NativeUi.MUTED,
+                available && open ? 0xffe6f4ea : NativeUi.SOFT);
+    }
+
+    private LinearLayout productHeader(JSONObject product, int photoSize, String subtitle) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(image(product, photoSize), new LinearLayout.LayoutParams(dp(photoSize), dp(photoSize)));
+        LinearLayout description = ui.column();
+        description.setPadding(dp(12), 0, 0, 0);
+        add(description, ui.heading(product.optString("name"), 19), 0);
+        if (!subtitle.isEmpty()) add(description, ui.text(subtitle, 13, NativeUi.MUTED, false), 3);
+        row.addView(description, new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    private void productCard(JSONObject product) {
+        String id = product.optString("id");
+        LinearLayout card = ui.card();
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout header = productHeader(product, 68, product.optString("portion").trim());
+        header.setOnClickListener(view -> go("detail", id));
+        ui.buttonRole(header);
+        header.setContentDescription("Ver " + product.optString("name"));
+        header.setTag("shopping:product:" + id);
+        card.addView(header);
+        JSONObject sale = SaleSchedule.forProduct(product, baseSettings());
+        if (!screen.equals("food") || !SaleSchedule.key(sale).equals(SaleSchedule.key(baseSettings()))) {
+            add(card, ui.text(SaleSchedule.day(sale), 13, NativeUi.MUTED, false), 6);
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout info = ui.column();
+        add(info, ui.text(cash(product.optDouble("price")) + " " + unit(product), 17, NativeUi.WINE, true), 0);
+        add(info, stockLabel(product), 3);
+        actions.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+        actions.addView(quantityPicker(product, false), new LinearLayout.LayoutParams(dp(132), dp(52)));
+        add(card, actions, 6);
+        add(content, card, screen.equals("food") ? 7 : 12);
+    }
+
+    private int cartQuantity(String id) {
+        return state().optJSONObject("cart").optInt(id);
+    }
+
+    private int extraQuantity(String id) {
+        JSONObject extras = state().optJSONObject("extraCart");
+        return extras == null ? 0 : extras.optInt(id);
+    }
+
+    private String additionProblem(JSONObject product) {
+        if (!product.optBoolean("available")) return "No disponible";
+        if (!accepting(product)) return "Cerrado";
+        if (store.cartNeedsReview()) return "Revisa tu carrito";
+        JSONObject sale = SaleSchedule.forProduct(product, baseSettings());
+        if (store.shoppingCount() > 0 && !SaleSchedule.key(store.currentSale()).equals(SaleSchedule.key(sale))) {
+            return "Otra jornada";
+        }
+        return "";
+    }
+
+    private FrameLayout quantityPicker(JSONObject product, boolean cart) {
+        String id = product.optString("id"), name = product.optString("name");
+        FrameLayout picker = new FrameLayout(this);
+        LinearLayout controls = new LinearLayout(this);
+        controls.setGravity(Gravity.CENTER_VERTICAL);
+        TextView minus = ui.button("−", false, null, () -> changeQuantity(id, -1));
+        TextView plus = ui.button("+", false, null, () -> changeQuantity(id, 1));
+        minus.setPadding(0, 0, 0, 0);
+        plus.setPadding(0, 0, 0, 0);
+        minus.setContentDescription("Quitar uno de " + name);
+        plus.setContentDescription("Agregar uno de " + name);
+        minus.setTag("shopping:minus:" + id);
+        plus.setTag("shopping:plus:" + id);
+        TextView amount = ui.text("", 18, NativeUi.INK, true);
+        amount.setGravity(Gravity.CENTER);
+        amount.setTag("shopping:quantity:" + id);
+        controls.addView(minus, new LinearLayout.LayoutParams(dp(48), -1));
+        controls.addView(amount, new LinearLayout.LayoutParams(0, -2, 1));
+        controls.addView(plus, new LinearLayout.LayoutParams(dp(48), -1));
+        picker.addView(controls, new FrameLayout.LayoutParams(-1, -1));
+
+        TextView addButton = cart ? null : ui.button("Agregar", true, null, () -> changeQuantity(id, 1));
+        if (addButton != null) {
+            addButton.setTag("shopping:add:" + id);
+            addButton.setTextSize(14);
+            addButton.setPadding(dp(6), 0, dp(6), 0);
+            picker.addView(addButton, new FrameLayout.LayoutParams(-1, -1));
+        }
+
+        Runnable refresh = () -> {
+            int reserved = cartQuantity(id), extra = extraQuantity(id), quantity = reserved + extra;
+            String problem = additionProblem(product);
+            amount.setText(String.valueOf(quantity));
+            amount.setContentDescription(quantity + " de " + name + (extra > 0 ? ", " + extra + " por confirmar" : ""));
+            setActionEnabled(minus, quantity > 0);
+            setActionEnabled(plus, problem.isEmpty() && quantity < 99);
+            plus.setContentDescription(reserved >= product.optInt("stock")
+                    ? "Solicitar una unidad extra de " + name : "Agregar uno de " + name);
+            if (addButton != null) {
+                controls.setVisibility(quantity > 0 ? View.VISIBLE : View.GONE);
+                addButton.setVisibility(quantity == 0 ? View.VISIBLE : View.GONE);
+                String action = product.optInt("stock") <= 0 ? "Solicitar" : "Agregar";
+                addButton.setText(problem.isEmpty() ? action : problem);
+                addButton.setContentDescription(problem.isEmpty() ? "Agregar " + name : name + " · " + problem);
+                setActionEnabled(addButton, problem.isEmpty());
+            }
+        };
+        refresh.run();
+        quantityRefreshers.add(refresh);
+        return picker;
+    }
+
+    private void changeQuantity(String id, int delta) {
+        JSONObject product = product(id);
+        if (product == null) return;
+        if (delta > 0 && cartQuantity(id) >= product.optInt("stock")) {
+            if (extraQuantity(id) > 0) {
+                updateQuantity(id, delta, true);
+                return;
+            }
+            int regular = cartQuantity(id);
+            String description = regular == 0 ? "Por ahora no hay cupos disponibles."
+                    : "Ya tienes " + regular + " unidad(es) con cupo en el carrito.";
+            new AlertDialog.Builder(this).setTitle("¿Solicitar una unidad extra?")
+                    .setMessage(description + " La unidad extra queda por confirmar y no se cobrará con este pedido.")
+                    .setNegativeButton("Volver", null)
+                    .setPositiveButton("Agregar solicitud", (dialog, which) -> updateQuantity(id, delta, true))
+                    .show();
+            return;
+        }
+        updateQuantity(id, delta, delta < 0 && extraQuantity(id) > 0);
+    }
+
+    private void updateQuantity(String id, int delta, boolean extra) {
+        try {
+            if (extra) put(viewState, "extraCart", store.changeExtra(id, delta));
+            else put(viewState, "cart", store.adjustQuantity(id, delta));
+            if (screen.equals("cart") && store.shoppingCount() == 0) {
                 render();
-            }).show();
+                return;
+            }
+            for (Runnable refresh : quantityRefreshers) refresh.run();
+            refreshShoppingActions();
+        } catch (Exception error) {
+            toast(error.getMessage());
+        }
+    }
+
+    private void setActionEnabled(View action, boolean enabled) {
+        action.setEnabled(enabled);
+        action.setAlpha(enabled ? 1f : .6f);
+    }
+
+    private void refreshShoppingActions() {
+        int count = store.shoppingCount();
+        if (cartTab != null) {
+            cartTab.setText(count == 0 ? "Carrito" : "Carrito · " + count);
+            cartTab.setContentDescription(count == 0 ? "Carrito vacío" : "Carrito con " + count + " unidades");
+        }
+        if (shoppingAction == null) return;
+        String subtotal = cash(store.subtotal());
+        if (screen.equals("cart")) {
+            cartSubtotal.setText(store.count() == 0 ? "Sin cobro" : subtotal);
+            shoppingAction.setText(store.count() == 0 ? "Continuar con la solicitud" : "Elegir entrega");
+            setActionEnabled(shoppingAction, count > 0 && accepting() && !store.cartNeedsReview());
+        } else {
+            footer.setVisibility(count > 0 ? View.VISIBLE : View.GONE);
+            shoppingAction.setText(store.count() == 0 && count > 0 ? "Ver carrito · " + count + " por confirmar"
+                    : "Ver carrito · " + count + " · " + subtotal);
+            shoppingAction.setContentDescription("Ver carrito, " + count + " unidades, subtotal " + subtotal);
+        }
+    }
+
+    private void showProduct() {
+        JSONObject product = product(selectedId);
+        if (product == null || !product.optString("line").equals("commercial")) {
+            empty("Producto no disponible", "Puedes elegir otro producto del catálogo.");
+            add(content, ui.button("Ver catálogo", false, "food", () -> go("food", "")), 12);
+            return;
+        }
+        ImageView photo = image(product, 320);
+        photo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        add(content, photo, 0);
+        photo.getLayoutParams().height = dp(215);
+        if (!ImageTools.hasProductPhoto(product)) note("Ilustración referencial.");
+        add(content, ui.heading(product.optString("name"), 28), 14);
+        add(content, ui.text(cash(product.optDouble("price")) + " " + unit(product), 22, NativeUi.WINE, true), 5);
+        add(content, stockLabel(product), 5);
+        add(content, quantityPicker(product, false), 12);
+        String portion = product.optString("portion").trim();
+        String description = product.optString("description").trim();
+        if (!portion.isEmpty()) add(content, ui.text(portion, 16, NativeUi.INK, true), 12);
+        if (!description.isEmpty() && !description.equals(portion)) note(description);
+        saleCard();
+    }
+
+    private void showOffers() {
+        title("Ofertas", "Combos y promociones de la olla.");
+        List<JSONObject> offers = catalogProducts(true);
+        if (offers.isEmpty()) {
+            empty("Todavía no hay ofertas", "Mientras tanto puedes elegir productos del catálogo.");
+            add(content, ui.button("Ver catálogo", false, "food", () -> go("food", "")), 12);
+        }
+        for (JSONObject offer : offers) productCard(offer);
+        double from = baseSettings().optDouble("deliveryFreeFrom", 0);
+        if (from > 0) add(content, ui.message("Reparto gratis desde " + cash(from),
+                "Solo dentro de la cobertura habilitada.", NativeUi.SOFT), 16);
+    }
+
+    private void empty(String title, String detail) {
+        add(content, ui.message(title, detail, NativeUi.GOLD), 18);
+    }
+
+    private void showCart() {
+        title("Tu carrito", "");
+        if (store.shoppingCount() == 0) {
+            empty("Tu carrito está vacío", "Elige productos del catálogo para armar tu pedido.");
+            primary("Ver catálogo", () -> go("food", ""));
+            return;
+        }
+
+        add(content, ui.message("Día de venta", SaleSchedule.day(settings()), NativeUi.GOLD), 12);
+        if (store.cartNeedsReview()) {
+            note("Cambió la jornada de venta. Quita los productos y vuelve a elegirlos para la próxima fecha.");
+        } else if (!accepting()) {
+            note(SaleSchedule.unavailable(settings(), System.currentTimeMillis()));
+        }
+        Set<String> products = new LinkedHashSet<>();
+        state().optJSONObject("cart").keys().forEachRemaining(products::add);
+        JSONObject extras = state().optJSONObject("extraCart");
+        if (extras != null) extras.keys().forEachRemaining(products::add);
+        for (String id : products) {
+            JSONObject product = product(id);
+            if (product != null) cartCard(product);
+        }
+        note("El costo de delivery se suma al elegir el sector. El recojo es gratis.");
+        add(content, ui.button("Seguir comprando", false, "food", () -> go("food", "")), 12);
+        add(content, ui.button("Vaciar carrito", false, null, () -> new AlertDialog.Builder(this)
+                .setTitle("¿Vaciar carrito?").setMessage("Se quitarán todos los productos seleccionados.")
+                .setNegativeButton("Conservar", null).setPositiveButton("Vaciar", (dialog, which) -> {
+                    try {
+                        store.clearCart();
+                        render();
+                    } catch (Exception error) {
+                        toast("No pudimos vaciar el carrito. Intenta otra vez.");
+                    }
+                }).show()), 8);
+
+        LinearLayout total = new LinearLayout(this);
+        total.setGravity(Gravity.CENTER_VERTICAL);
+        total.addView(ui.text("Subtotal", 15, NativeUi.MUTED, true), new LinearLayout.LayoutParams(0, -2, 1));
+        cartSubtotal = ui.text("", 21, NativeUi.WINE, true);
+        cartSubtotal.setTag("shopping:subtotal");
+        total.addView(cartSubtotal);
+        add(footer, total, 0);
+        shoppingAction = ui.button("Elegir entrega", true, null, () -> {
+            step = 0;
+            go("checkout", "");
         });
-        ui.buttonRole(filterRow);
-        TextView filterLabel = ui.text("Categoría: ", 14, NativeUi.MUTED, false);
-        filterRow.addView(filterLabel);
-        TextView filterValue = ui.text(category, 16, NativeUi.WINE, true);
-        filterRow.addView(filterValue, new LinearLayout.LayoutParams(0, -2, 1));
-        ImageView chevron = new ImageView(this);
-        chevron.setImageResource(android.R.drawable.arrow_down_float);
-        chevron.setColorFilter(NativeUi.WINE);
-        filterRow.addView(chevron, new LinearLayout.LayoutParams(dp(24), dp(24)));
-        add(content, filterRow, 16);
+        shoppingAction.setTag("shopping:checkout");
+        add(footer, shoppingAction, 5);
+        footer.setVisibility(View.VISIBLE);
     }
-    private void productCard(JSONObject p){
-        LinearLayout card=ui.card();card.setPadding(dp(12),dp(12),dp(12),dp(12));LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.addView(image(p,112),new LinearLayout.LayoutParams(dp(112),dp(112)));
-        JSONObject schedule=SaleSchedule.forProduct(p,baseSettings());LinearLayout copy=ui.column();copy.setPadding(dp(12),0,0,0);add(copy,ui.text(p.optString("category").toUpperCase(new Locale("es")),10,NativeUi.CORAL,true),0);add(copy,ui.heading(p.optString("name"),19),4);String portion=p.optString("portion");if(!portion.isEmpty())add(copy,ui.text(portion,13,NativeUi.INK,false),4);add(copy,ui.text("Venta: "+SaleSchedule.day(schedule),12,NativeUi.MUTED,false),6);if(!ImageTools.hasProductPhoto(p))add(copy,ui.text("Imagen referencial",10,NativeUi.MUTED,false),5);row.addView(copy,new LinearLayout.LayoutParams(0,-2,1));card.addView(row);
-        LinearLayout bottom=new LinearLayout(this);bottom.setGravity(Gravity.CENTER_VERTICAL);LinearLayout price=ui.column();price.addView(ui.text(cash(p.optDouble("price")),23,NativeUi.WINE,true));price.addView(ui.text(unit(p),12,NativeUi.MUTED,false));bottom.addView(price,new LinearLayout.LayoutParams(0,-2,1));boolean available=p.optBoolean("available")&&p.optInt("stock")>0;int quantity=state().optJSONObject("cart").optInt(p.optString("id"));TextView action=ui.button(!accepting(p)?"Cerrado":available?(quantity>0?"Agregar · "+quantity:"Reservar"):"Sin cupos",true,null,()->changeQuantity(p,1,false));action.setTextSize(14);action.setEnabled(accepting(p)&&available&&quantity<p.optInt("stock"));action.setAlpha(action.isEnabled()?1f:.55f);bottom.addView(action,new LinearLayout.LayoutParams(dp(112),-2));add(card,bottom,10);card.setOnClickListener(v->go("detail",p.optString("id")));ui.buttonRole(card);add(content,card,13);
+
+    private void cartCard(JSONObject product) {
+        String id = product.optString("id");
+        LinearLayout card = ui.card();
+        card.setTag("shopping:line:" + id);
+        card.addView(productHeader(product, 56, cash(product.optDouble("price")) + " " + unit(product)));
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(quantityPicker(product, true), new LinearLayout.LayoutParams(dp(132), dp(52)));
+        TextView lineTotal = ui.text("", 19, NativeUi.WINE, true);
+        lineTotal.setGravity(Gravity.END);
+        row.addView(lineTotal, new LinearLayout.LayoutParams(0, -2, 1));
+        add(card, row, 10);
+        TextView extraLabel = ui.text("", 13, NativeUi.WINE, true);
+        add(card, extraLabel, 6);
+        add(content, card, 12);
+        Runnable refresh = () -> {
+            int amount = cartQuantity(id);
+            int extras = extraQuantity(id);
+            card.setVisibility(amount + extras == 0 ? View.GONE : View.VISIBLE);
+            lineTotal.setText(cash(product.optDouble("price") * amount));
+            extraLabel.setVisibility(extras == 0 ? View.GONE : View.VISIBLE);
+            extraLabel.setText(amount + " con cupo · " + extras + " por confirmar");
+        };
+        refresh.run();
+        quantityRefreshers.add(refresh);
     }
-    private void changeQuantity(JSONObject p,int delta,boolean wholeScreen){try{int quantity=state().optJSONObject("cart").optInt(p.optString("id"));store.quantity(p.optString("id"),quantity+delta);int y=scroll.getScrollY();render();scroll.post(()->scroll.scrollTo(0,y));if(!wholeScreen)toast("Agregado: "+p.optString("name"));}catch(Exception error){toast(error.getMessage());}}
-    private void showProduct(){JSONObject p=product(selectedId);if(p==null||!p.optString("line").equals("commercial")){go("food","");return;}ImageView photo=image(p,320);photo.setScaleType(ImageView.ScaleType.FIT_CENTER);add(content,photo,0);photo.getLayoutParams().height=dp(215);if(!ImageTools.hasProductPhoto(p))note("Ilustración referencial.");add(content,ui.heading(p.optString("name"),28),16);add(content,ui.text(cash(p.optDouble("price"))+" "+unit(p),23,NativeUi.WINE,true),6);if(!p.optString("portion").isEmpty())add(content,ui.text(p.optString("portion"),17,NativeUi.INK,true),13);note(p.optString("description"));saleCard();add(content,ui.message("Recojo en Manka Kusi",SaleSchedule.window(settings()),NativeUi.CARD),15);note("También puedes pedir delivery dentro de las zonas cercanas habilitadas.");if(accepting(p)&&p.optBoolean("available")&&p.optInt("stock")>0)primary("Reservar en el carrito",()->changeQuantity(p,1,true));else note("Este producto no está disponible por ahora.");}
-    private void showOffers(){title("Ofertas de Manka Kusi","Combos anunciados para las próximas jornadas.");announcedProducts();double from=baseSettings().optDouble("deliveryFreeFrom",0);if(from>0)add(content,ui.message("Reparto gratis desde "+cash(from),"Solo dentro de la cobertura habilitada.",NativeUi.SOFT),16);}
-    private void empty(String title,String detail){add(content,ui.message(title,detail,NativeUi.GOLD),18);}
-    private void showCart(){title("Tu carrito","Reservas para una misma jornada de venta.");saleCard();if(store.cartNeedsReview())note("Tu carrito corresponde a otra jornada. Vacíalo y vuelve a elegir los productos para esta fecha; tus pedidos anteriores se conservan.");if(store.count()==0){empty("Tu primer antojo te espera","Elige productos para la próxima venta o agrega un combo.");add(content,ui.button("Ver la comida",true,"food",()->go("food","")),18);return;}JSONObject cart=state().optJSONObject("cart");java.util.Iterator<String> ids=cart.keys();while(ids.hasNext()){JSONObject p=product(ids.next());if(p==null)continue;int quantity=cart.optInt(p.optString("id"));LinearLayout c=ui.card();add(c,ui.text(p.optString("name"),19,NativeUi.INK,true),0);add(c,ui.text(cash(p.optDouble("price"))+" "+unit(p),14,NativeUi.MUTED,false),5);LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);TextView minus=ui.button("−",false,null,()->changeQuantity(p,-1,true));minus.setContentDescription("Quitar uno de "+p.optString("name"));row.addView(minus,new LinearLayout.LayoutParams(dp(54),dp(50)));TextView amount=ui.text(String.valueOf(quantity),21,NativeUi.INK,true);amount.setGravity(Gravity.CENTER);row.addView(amount,new LinearLayout.LayoutParams(dp(44),-2));TextView plus=ui.button("+",false,null,()->changeQuantity(p,1,true));plus.setContentDescription("Agregar uno de "+p.optString("name"));plus.setEnabled(accepting()&&!store.cartNeedsReview()&&quantity<p.optInt("stock"));row.addView(plus,new LinearLayout.LayoutParams(dp(54),dp(50)));TextView price=ui.text(cash(quantity*p.optDouble("price")),19,NativeUi.WINE,true);price.setGravity(Gravity.RIGHT);row.addView(price,new LinearLayout.LayoutParams(0,-2,1));add(c,row,12);add(content,c,13);}add(content,ui.message("Comida: "+cash(store.subtotal()),"El reparto se calcula al elegir el sector. El recojo no tiene costo.",NativeUi.GOLD),16);add(content,ui.button("Vaciar carrito",false,null,()->{try{store.clearCart();render();}catch(Exception error){toast("No pudimos vaciar el carrito. Intenta otra vez.");}}),12);if(accepting()&&!store.cartNeedsReview())primary("Elegir cómo lo recibo",()->{step=0;go("checkout","");});}
 
     private EditText field(String key,String label,String hint,boolean phone){
         TextView name=ui.text(label,15,NativeUi.INK,true);add(content,name,16);EditText input=new EditText(this);input.setId(View.generateViewId());name.setLabelFor(input.getId());input.setTextSize(17);input.setTypeface(ui.regular);input.setTextColor(NativeUi.INK);input.setHintTextColor(NativeUi.MUTED);input.setHint(hint);input.setPadding(dp(14),dp(13),dp(14),dp(13));input.setMinHeight(dp(54));input.setBackground(ui.background(NativeUi.CARD,NativeUi.LINE,14));input.setInputType(phone?InputType.TYPE_CLASS_PHONE:InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);if(phone)input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(9)});if(Arrays.asList("address","reference","meeting").contains(key)){input.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES|InputType.TYPE_TEXT_FLAG_MULTI_LINE);input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(240)});input.setMinLines(key.equals("address")?1:2);input.setMaxLines(4);input.setGravity(Gravity.TOP);}input.setText(details.optString(key));input.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){}public void afterTextChanged(android.text.Editable s){handler.removeCallbacks(saveDetailsDraft);handler.postDelayed(saveDetailsDraft,500);}});fields.put(key,input);add(content,input,6);return input;
@@ -182,111 +584,668 @@ public class CustomerActivity extends Activity {
     private void captureDetails(){if(details==null||store==null)return;for(Map.Entry<String,EditText> field:fields.entrySet())put(details,field.getKey(),field.getValue().getText().toString().trim());try{store.details(details);}catch(Exception error){toast("No pudimos conservar tus datos. Intenta otra vez antes de salir.");}}
     private void error(String field,String message){EditText input=fields.get(field);if(input!=null){input.setError(message);input.requestFocus();input.announceForAccessibility(message);}else toast(message);}
     private void choices(String[] keys,String[] labels,String selected,java.util.function.Consumer<String> action){LinearLayout row=new LinearLayout(this);for(int i=0;i<keys.length;i++){String key=keys[i];boolean active=key.equals(selected);TextView choice=ui.button(labels[i],false,null,()->action.accept(key));choice.setTextSize(14);choice.setSelected(active);choice.setTextColor(active?NativeUi.CARD:NativeUi.WINE);choice.setBackground(ui.background(active?NativeUi.WINE:NativeUi.CARD,active?0:NativeUi.LINE,14));LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,-2,1);params.setMargins(dp(i==0?0:4),0,dp(i==keys.length-1?0:4),0);row.addView(choice,params);}add(content,row,12);}
-    private void showCheckout(){
-        if(store.count()==0){empty("Tu carrito está vacío","Agrega algo de la comida antes de continuar.");primary("Elegir comida",()->go("food",""));return;}
-        if(!accepting()){saleCard();primary("Volver al carrito",()->go("cart",""));return;}String[] names={"Cómo recibirlo","Tus datos","Revisar"};add(content,ui.heading(names[step],24),0);add(content,ui.text("Venta: "+SaleSchedule.day(settings()),13,NativeUi.WINE,true),6);LinearLayout steps=new LinearLayout(this);for(int i=0;i<3;i++){TextView label=ui.text((i+1)+". "+new String[]{"Entrega","Datos","Revisar"}[i],12,i==step?NativeUi.CARD:NativeUi.WINE,true);label.setPadding(dp(8),dp(9),dp(8),dp(9));label.setGravity(Gravity.CENTER);label.setBackground(ui.background(i==step?NativeUi.WINE:NativeUi.CARD,0,10));LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,-2,1);params.rightMargin=dp(5);steps.addView(label,params);}add(content,steps,12);
-        if(step==0){
-            choices(new String[]{"pickup","delivery"},new String[]{"En la olla","Con delivery"},details.optString("fulfillment","pickup"),key->{captureDetails();put(details,"fulfillment",key);render();});
-            if(details.optString("fulfillment","pickup").equals("pickup")){add(content,ui.message("En la olla",settings().optString("pickup")+"\n\n"+SaleSchedule.window(settings()),NativeUi.CARD),16);note("Acércate dentro del intervalo acordado cuando la olla confirme tu reserva.");}
-            else{
-                add(content,ui.text("¿Dónde recibirás?",15,NativeUi.INK,true),18);choices(new String[]{"home","work","other"},new String[]{"Casa","Trabajo","Otro lugar"},details.optString("destinationType","home"),key->{captureDetails();put(details,"destinationType",key);render();});note("Elige el lugar de entrega. El sector y la dirección deben corresponder a ese lugar, no a donde estás ahora.");
-                add(content,ui.text("Sector de entrega",15,NativeUi.INK,true),18);JSONArray zones=settings().optJSONArray("zones");List<String> labels=new ArrayList<>(),ids=new ArrayList<>(),namesList=new ArrayList<>();labels.add("Elige tu sector");ids.add("");namesList.add("");for(int i=0;zones!=null&&i<zones.length();i++){JSONObject zone=zones.optJSONObject(i);if(!zone.optBoolean("enabled"))continue;double price=SaleRules.deliveryFee(store.subtotal(),zone.optDouble("fee"),settings().optDouble("deliveryFreeFrom",0));labels.add(zone.optString("name")+" · "+(price==0?"Gratis":cash(price)));ids.add(zone.optString("id"));namesList.add(zone.optString("name"));}
-                Spinner picker=new Spinner(this);ArrayAdapter<String> adapter=new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,labels){@Override public View getView(int position,View convert,android.view.ViewGroup parent){TextView view=(TextView)super.getView(position,convert,parent);view.setTypeface(ui.regular);view.setTextColor(NativeUi.INK);view.setTextSize(16);return view;}};picker.setAdapter(adapter);picker.setBackground(ui.background(NativeUi.CARD,NativeUi.LINE,12));picker.setMinimumHeight(dp(54));picker.setContentDescription("Sector de entrega");picker.setSelection(Math.max(0,ids.indexOf(details.optString("zoneId"))));picker.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id){put(details,"zoneId",ids.get(position));put(details,"zone",namesList.get(position));updateSummary();}public void onNothingSelected(android.widget.AdapterView<?> parent){}});add(content,picker,6);
-                field("address","Dirección de entrega","Sector, manzana, lote, calle o punto acordado",false);field("reference","Referencias para llegar","Casa verde, al pie de las escaleras, frente a la bodega",false);TextView gps=ui.button(locating?"Buscando ubicación…":"Usar mi ubicación actual",false,"pin",()->requestDeliveryLocation());gps.setEnabled(!locating);add(content,gps,16);note("Úsalo solo si ya estás en el lugar de entrega. Si pides para casa o trabajo desde otro lugar, escribe la dirección y referencias.");destinationCard(content,details,true);note("Reparto el "+SaleSchedule.day(settings())+". La olla confirmará la hora, el acceso y el punto de encuentro.");
-            }
-        }else if(step==1){field("customer","Tu nombre","¿A nombre de quién será el pedido?",false);field("phone","Celular de contacto","9 dígitos, empieza con 9",true);add(content,ui.heading("¿Cómo prefieres pagar?",21),22);String mode=settings().optString("paymentMode","both");String[] payKeys="cash".equals(mode)?new String[]{"cash"}:"yape".equals(mode)?new String[]{"cash","yape"}:"plin".equals(mode)?new String[]{"cash","plin"}:new String[]{"cash","yape","plin"};String[] payLabels="cash".equals(mode)?new String[]{"Efectivo"}:"yape".equals(mode)?new String[]{"Efectivo","Yape"}:"plin".equals(mode)?new String[]{"Efectivo","Plin"}:new String[]{"Efectivo","Yape","Plin"};String selectedPay=details.optString("payment","cash");if(!Arrays.asList(payKeys).contains(selectedPay)){selectedPay="cash";put(details,"payment","cash");}choices(payKeys,payLabels,selectedPay,key->{captureDetails();put(details,"payment",key);render();});note("Elegir una opción no realiza un cobro. Espera la confirmación de la olla antes de pagar.");}
-        else{
-            add(content,ui.heading("Así queda tu pedido",22),22);JSONObject cart=state().optJSONObject("cart");java.util.Iterator<String> ids=cart.keys();while(ids.hasNext()){String id=ids.next();JSONObject p=product(id);if(p==null)continue;summaryLine(content,cart.optInt(id)+" × "+p.optString("name"),cash(cart.optInt(id)*p.optDouble("price")),false);}
-            LinearLayout contact=ui.message(details.optString("customer"),details.optString("phone"),NativeUi.CARD);add(content,contact,16);boolean delivery=details.optString("fulfillment","pickup").equals("delivery");String place=delivery?DeliveryDestination.typeLabel(details.optString("destinationType","home"))+" · "+details.optString("zone")+" · "+details.optString("address")+"\nReferencia: "+details.optString("reference"):settings().optString("pickup");add(content,ui.message(delivery?"Delivery el día de venta":"Recojo en Manka Kusi",place,NativeUi.CARD),12);if(delivery)destinationCard(content,details,false);add(content,ui.message("Forma de pago elegida",payment()+" · pago sin realizar",NativeUi.SOFT),12);add(content,ui.message("Fecha de venta",SaleSchedule.day(settings())+(delivery?"\nManka Kusi coordinará la hora del reparto.":"\n"+SaleSchedule.window(settings())),NativeUi.GOLD),12);note("El pedido se enviará directamente a ManchApp Emprendedora instalada en este celular.");
+    private void showCheckout() {
+        if (store.shoppingCount() == 0) {
+            empty("Tu carrito está vacío", "Agrega productos antes de continuar.");
+            primary("Ver catálogo", () -> go("food", ""));
+            return;
         }
-        summary=ui.card();add(content,summary,18);updateSummary();
-        if(step<2)primary(step==0?"Continuar con mis datos":"Revisar mi pedido",()->{captureDetails();if(!validStep())return;step++;hideKeyboard();render();});
-        else primary(submittingOrder?"Enviando…":"Enviar pedido",()->{
-            if(submittingOrder)return;
-            captureDetails();
-            try{
-                final JSONObject order=store.placeReviewedOrder(details,catalog().optInt("revision"));
-                submittingOrder=true;step=0;go("receipt",order.optString("id"));
-                worker.execute(()->{
-                    String notice="";boolean accepted=false;
-                    try{store.acceptOrder(order.optString("id"),DeviceBridgeClient.placeOrder(this,order));accepted=true;}
-                    catch(Exception bridge){
-                        String message=bridge.getMessage()==null?"No pudimos enviar el pedido.":bridge.getMessage();
-                        if(stockConflict(message)){
-                            try{store.rejectOrder(order.optString("id"),"El último cupo se vendió antes de confirmar tu pedido.");}catch(Exception ignored){}
-                            notice="Ya se vendió el último cupo. Puedes solicitar más ventas a la olla.";
-                        }else{notice=message+" El pedido quedó guardado para reintentar.";}
-                    }
-                    final boolean ok=accepted;final String toastMsg=notice;
-                    runOnUiThread(()->{submittingOrder=false;online=ok;if(isFinishing()||isDestroyed())return;if(!toastMsg.isEmpty())toast(toastMsg);render();syncDevice(false);});
+        if (!accepting() || store.cartNeedsReview()) {
+            saleCard();
+            primary("Volver al carrito", () -> go("cart", ""));
+            return;
+        }
+        String[] names = {"Entrega", "Tus datos", "Revisar"};
+        if (step > 0) {
+            TextView back = ui.button("‹ " + names[step - 1], false, null, this::onBackPressed);
+            back.setMinHeight(dp(44));
+            back.setTextSize(13);
+            back.setTag("checkout:back");
+            content.addView(back, new LinearLayout.LayoutParams(-2, -2));
+        }
+        add(content, ui.heading(names[step], 24), step == 0 ? 0 : 8);
+        add(content, ui.text("Paso " + (step + 1) + " de 3 · " + SaleSchedule.day(settings()),
+                13, NativeUi.WINE, true), 6);
+        if (step == 0) showDeliveryStep();
+        else if (step == 1) showContactStep();
+        else showReviewStep();
+
+        summary = ui.card();
+        add(content, summary, 16);
+        updateSummary();
+        if (step < 2) {
+            primary(step == 0 ? "Continuar con mis datos" : "Revisar", this::advanceCheckout);
+        } else {
+            primary(submittingOrder ? "Enviando…" : store.count() > 0 ? "Enviar pedido" : "Enviar solicitud",
+                    this::confirmShopping);
+        }
+    }
+
+    private void showDeliveryStep() {
+        choices(new String[]{"pickup", "delivery"}, new String[]{"Recojo", "Delivery"},
+                details.optString("fulfillment", "pickup"), key -> {
+                    captureDetails();
+                    if (locator != null) locator.cancel();
+                    locating = false;
+                    put(details, "fulfillment", key);
+                    render();
                 });
-            }catch(Exception error){render();toast(error.getMessage());}
+        if (!details.optString("fulfillment", "pickup").equals("delivery")) {
+            add(content, ui.message("Recojo en la olla", settings().optString("pickup") + "\n"
+                    + SaleSchedule.window(settings()), NativeUi.CARD), 12);
+            return;
+        }
+        TextView gps = ui.button(locating ? "Buscando ubicación…" : "Usar mi ubicación",
+                true, "pin", this::requestDeliveryLocation);
+        gps.setEnabled(!locating);
+        gps.setTag("checkout:gps");
+        add(content, gps, 12);
+        note("Úsala si estás en el destino. Si estás en otro lugar, busca la dirección de entrega.");
+        field("address", "Dirección de entrega", "Calle, número o punto de encuentro", false);
+        TextView search = ui.button("Buscar dirección", false, "pin", this::findDeliveryAddress);
+        search.setEnabled(!locating);
+        add(content, search, 8);
+        field("reference", "Referencia para llegar", "Ej. Portón verde junto a la bodega", false);
+        destinationCard(content, details, true);
+        try {
+            JSONObject zone = DeliveryDestination.verifiedZone(settings(), details);
+            add(content, ui.message(zone.getString("name"),
+                    store.count() > 0 ? "Delivery: " + cash(store.fee(details)) : "Cobertura verificada",
+                    NativeUi.SOFT), 12);
+        } catch (Exception ignored) {
+            note("Calcularemos el sector y la tarifa al ubicar el destino.");
+        }
+    }
+
+    private void showContactStep() {
+        field("customer", "Tu nombre", "¿A nombre de quién será?", false);
+        field("phone", "Celular de contacto", "9 dígitos, empieza con 9", true);
+        if (store.count() == 0) {
+            note("Si la olla acepta la solicitud, coordinará el pago contigo.");
+            return;
+        }
+        add(content, ui.heading("Forma de pago", 21), 22);
+        JSONObject shop = baseSettings();
+        String mode = shop.optString("paymentMode", "both");
+        boolean hasQr = !shop.optString("paymentImage").isEmpty();
+        boolean hasWallet = hasQr || SaleRules.validPhone(shop.optString("walletPhone"));
+        List<String> keys = new ArrayList<>(), labels = new ArrayList<>();
+        keys.add("cash");
+        labels.add("Efectivo");
+        if (hasWallet && !shop.optBoolean("cashOnly") && !mode.equals("cash")) {
+            if (!mode.equals("plin")) {
+                keys.add("yape");
+                labels.add(hasQr ? "Yape / QR" : "Yape");
+            }
+            if (!mode.equals("yape")) {
+                keys.add("plin");
+                labels.add(hasQr ? "Plin / QR" : "Plin");
+            }
+        }
+        String selected = details.optString("payment", "cash");
+        if (!keys.contains(selected)) {
+            selected = "cash";
+            put(details, "payment", selected);
+        }
+        choices(keys.toArray(new String[0]), labels.toArray(new String[0]), selected, key -> {
+            captureDetails();
+            put(details, "payment", key);
+            render();
         });
+        note(keys.size() == 1 ? "Paga en efectivo al recibir. La olla aún no habilitó un pago digital."
+                : hasQr ? "El QR se muestra cuando la olla reserva tus cupos y confirma el pedido."
+                : "La olla acepta transferencias por número. Verás los datos al confirmar el pedido.");
+    }
+
+    private void showReviewStep() {
+        JSONObject cart = state().optJSONObject("cart");
+        for (Iterator<String> ids = cart.keys(); ids.hasNext();) {
+            String id = ids.next();
+            JSONObject product = product(id);
+            if (product != null) summaryLine(content, cart.optInt(id) + " × " + product.optString("name"),
+                    cash(cart.optInt(id) * product.optDouble("price")), false);
+        }
+        if (store.extraCount() > 0) {
+            LinearLayout extra = ui.message("Cupos extra por confirmar", extraCartDescription(), NativeUi.SOFT);
+            add(extra, ui.text("Estas unidades quedan fuera del total. La olla decidirá si puede atenderlas.",
+                    14, NativeUi.INK, false), 8);
+            add(content, extra, 12);
+        }
+        add(content, ui.message(details.optString("customer"), details.optString("phone"), NativeUi.CARD), 12);
+        boolean delivery = details.optString("fulfillment", "pickup").equals("delivery");
+        String place = delivery ? details.optString("address") + "\n" + details.optString("reference")
+                : settings().optString("pickup");
+        add(content, ui.message(delivery ? "Delivery" : "Recojo", place, NativeUi.CARD), 12);
+        if (store.count() > 0) {
+            add(content, ui.message("Forma de pago", payment(), NativeUi.SOFT), 12);
+        }
+    }
+
+    private String extraCartDescription() {
+        StringBuilder text = new StringBuilder();
+        JSONObject extras = state().optJSONObject("extraCart");
+        for (Iterator<String> ids = extras == null ? Collections.<String>emptyList().iterator() : extras.keys(); ids.hasNext();) {
+            String id = ids.next();
+            JSONObject product = product(id);
+            if (product != null) {
+                if (text.length() > 0) text.append('\n');
+                text.append(extras.optInt(id)).append(" × ").append(product.optString("name"));
+            }
+        }
+        return text.toString();
+    }
+
+    private void advanceCheckout() {
+        captureDetails();
+        if (!validStep()) return;
+        step++;
+        hideKeyboard();
+        render();
+    }
+
+    private void confirmShopping() {
+        if (submittingOrder) return;
+        if (store.extraCount() == 0) {
+            sendShopping(false);
+            return;
+        }
+        boolean hasRegular = store.count() > 0;
+        AlertDialog.Builder confirm = new AlertDialog.Builder(this)
+                .setTitle(hasRegular ? "¿Solicitar también los cupos extra?" : "¿Enviar la solicitud de cupos extra?")
+                .setMessage(extraCartDescription() + "\n\nLa olla revisará si puede atenderla. Estas unidades no se cobran en el pedido con cupo.")
+                .setNegativeButton("Volver", null)
+                .setPositiveButton(hasRegular ? "Enviar ambos" : "Enviar solicitud", (dialog, which) -> sendShopping(true));
+        if (hasRegular) {
+            confirm.setNeutralButton("Solo con cupo", (dialog, which) -> sendShopping(false));
+        }
+        confirm.show();
+    }
+
+    private void sendShopping(boolean includeExtras) {
+        if (submittingOrder) return;
+        captureDetails();
+        try {
+            store.placeReviewedShopping(details, catalog().optInt("revision"), includeExtras);
+            submittingOrder = true;
+            details = store.snapshot().getJSONObject("details");
+            step = 0;
+            go("orders", "");
+            if (syncing) handler.postDelayed(bridgeRefresh, 250);
+            else syncDevice(true);
+        } catch (Exception error) {
+            submittingOrder = false;
+            render();
+            toast(error.getMessage());
+        }
     }
 
     private boolean deliveryScreen(){return screen.equals("checkout")&&step==0&&details.optString("fulfillment","pickup").equals("delivery");}
-    private void requestDeliveryLocation(){captureDetails();if(!locator.permission()){locator.ask();return;}locating=true;render();locator.start(new DeliveryLocator.Result(){
-        public void failed(String message){locating=false;if(!isFinishing()&&!isDestroyed()){toast(message);if(deliveryScreen())render();}}
-        public void found(android.location.Location location){locating=false;if(isFinishing()||isDestroyed()||!deliveryScreen())return;captureDetails();try{
-            JSONObject candidate=DeliveryDestination.point(location.getLatitude(),location.getLongitude(),location.getAccuracy(),System.currentTimeMillis());double distance=DeliveryDestination.distanceKm(baseSettings(),candidate);String zone=DeliveryDestination.zoneForDistance(baseSettings(),distance);render();if(distance<0){toast("No pudimos calcular la distancia. Revisa tu ubicación o escribe tu dirección.");return;}if(zone.isEmpty()){toast("Esta ubicación está fuera de la cobertura habilitada de Manka Kusi.");return;}
-            new AlertDialog.Builder(CustomerActivity.this).setTitle("¿Estás en el lugar de entrega?").setMessage("Destino: "+DeliveryDestination.typeLabel(details.optString("destinationType","home"))+"\nEntrega: "+SaleSchedule.day(settings())+"\nDistancia aproximada: "+String.format(Locale.US,"%.1f km",distance)+"\nDirección: "+details.optString("address","Por completar")+"\nConfirma solo si este punto corresponde al lugar de entrega.").setNegativeButton("Volver",null).setPositiveButton("Usar este punto",(d,w)->{captureDetails();put(details,"deliveryLocation",candidate);put(details,"zoneId",zone);confirmDestination();}).show();
-        }catch(Exception error){toast("No pudimos conservar ese punto. Puedes escribir tu dirección.");}}
-    });}
-    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==DeliveryLocator.REQUEST){if(locator.permission()&&deliveryScreen())requestDeliveryLocation();else toast("Puedes continuar con tu dirección y referencias.");}}
-    private void confirmDestination(){try{DeliveryDestination.confirm(details,settings().optString("saleDate"));store.details(details);render();}catch(Exception error){toast("No pudimos guardar el punto. Vuelve a intentarlo.");}}
+    private void requestDeliveryLocation() {
+        captureDetails();
+        if (!locator.permission()) {
+            locator.ask();
+            return;
+        }
+        locating = true;
+        render();
+        locator.start(new DeliveryLocator.Result() {
+            @Override public void failed(String message) {
+                locating = false;
+                if (deliveryScreen() && !isFinishing() && !isDestroyed()) {
+                    render();
+                    toast(message);
+                }
+            }
+            @Override public void found(android.location.Location location) {
+                locating = false;
+                if (!deliveryScreen() || isFinishing() || isDestroyed()) return;
+                captureDetails();
+                try {
+                    JSONObject point = DeliveryDestination.point(location.getLatitude(), location.getLongitude(),
+                            location.getAccuracy(), System.currentTimeMillis());
+                    setDeliveryPoint(point);
+                } catch (Exception error) {
+                    render();
+                    toast(error.getMessage());
+                }
+            }
+        });
+    }
+
+    private void findDeliveryAddress() {
+        captureDetails();
+        String address = details.optString("address").trim();
+        if (address.length() < 4) {
+            error("address", "Escribe la dirección que quieres buscar.");
+            return;
+        }
+        String locality = baseSettings().optString("location", "Manchay, Pachacámac");
+        locating = true;
+        render();
+        worker.execute(() -> {
+            List<android.location.Address> matches = Collections.emptyList();
+            try {
+                if (android.location.Geocoder.isPresent()) {
+                    List<android.location.Address> results = new android.location.Geocoder(this, new Locale("es", "PE"))
+                            .getFromLocationName(address + ", " + locality, 4);
+                    if (results != null) matches = results;
+                }
+            } catch (IOException | RuntimeException ignored) { /* Location remains available as an alternative. */ }
+            List<android.location.Address> found = matches;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed() || !deliveryScreen()) return;
+                locating = false;
+                captureDetails();
+                render();
+                if (!address.equals(details.optString("address").trim())) return;
+                List<android.location.Address> usable = new ArrayList<>();
+                List<String> labels = new ArrayList<>();
+                for (android.location.Address match : found) {
+                    if (!match.hasLatitude() || !match.hasLongitude() || match.getAddressLine(0) == null) continue;
+                    usable.add(match);
+                    labels.add(match.getAddressLine(0));
+                }
+                if (usable.isEmpty()) {
+                    toast("No encontramos la dirección. Prueba con una dirección más precisa o usa tu ubicación desde el destino.");
+                    return;
+                }
+                new AlertDialog.Builder(this).setTitle("Confirma tu dirección de entrega")
+                        .setItems(labels.toArray(new String[0]), (dialog, index) -> {
+                            android.location.Address match = usable.get(index);
+                            try {
+                                setDeliveryPoint(DeliveryDestination.point(match.getLatitude(), match.getLongitude(),
+                                        100, System.currentTimeMillis()));
+                            } catch (Exception error) {
+                                toast(error.getMessage());
+                            }
+                        }).setNegativeButton("Volver", null).show();
+            });
+        });
+    }
+
+    private void setDeliveryPoint(JSONObject point) throws Exception {
+        JSONObject destination = new JSONObject().put("deliveryLocation", point);
+        JSONObject zone = DeliveryDestination.verifiedZone(settings(), destination);
+        put(details, "deliveryLocation", point);
+        put(details, "zoneId", zone.getString("id"));
+        put(details, "zone", zone.getString("name"));
+        store.details(details);
+        render();
+    }
+
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==DeliveryLocator.REQUEST){if(locator.permission()&&deliveryScreen())requestDeliveryLocation();else toast("Puedes buscar la dirección o elegir recojo.");}}
+    private void confirmDestination() {
+        try {
+            JSONObject zone = DeliveryDestination.verifiedZone(settings(), details);
+            DeliveryDestination.confirm(details, settings().optString("saleDate"));
+            put(details, "zoneId", zone.getString("id"));
+            put(details, "zone", zone.getString("name"));
+            store.details(details);
+            render();
+        } catch (Exception error) {
+            toast(error.getMessage());
+        }
+    }
     private void destinationCard(LinearLayout parent,JSONObject value,boolean editable){JSONObject point=value.optJSONObject("deliveryLocation");if(point==null){String address=value.optString("address").trim();if(address.length()<4)return;LinearLayout card=ui.message("DIRECCIÓN DE ENTREGA",DeliveryDestination.typeLabel(value.optString("destinationType","home"))+" · "+value.optString("zone")+"\n"+address+"\nReferencia: "+value.optString("reference"),NativeUi.CARD);add(card,ui.button("Buscar dirección en app de mapas",false,"pin",()->{try{startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse(DeliveryDestination.addressGeo(value))));}catch(Exception error){toast("No hay una app de mapas disponible. La dirección escrita se conserva.");}}),10);add(parent,card,12);return;}boolean valid=DeliveryDestination.validPoint(point);String saleDate=editable||screen.equals("checkout")?settings().optString("saleDate"):value.optString("saleDate");boolean confirmed=valid&&DeliveryDestination.problem(value,saleDate).isEmpty();LinearLayout card=ui.message(confirmed?"Punto de entrega guardado":"Revisa el punto de entrega",valid?"Precisión aproximada: "+Math.round(point.optDouble("accuracy"))+" m. "+(confirmed?"Confirmado para esta dirección y fecha.":"Confirma el punto después de cambiar la dirección o fecha."):"Quita este punto y vuelve a obtener tu ubicación.",NativeUi.CARD);if(valid)add(card,ui.button("Ver punto",false,"pin",()->{try{startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse(DeliveryDestination.geo(point))));}catch(Exception error){toast("No hay una app de mapas disponible. La dirección escrita se conserva.");}}),10);if(editable){if(valid&&!confirmed)add(card,ui.button("Confirmar punto para esta entrega",false,null,()->{captureDetails();new AlertDialog.Builder(this).setTitle("¿El punto corresponde a esta dirección?").setMessage(details.optString("address")+"\nVenta: "+SaleSchedule.day(settings())).setNegativeButton("Volver",null).setPositiveButton("Sí, corresponde",(d,w)->confirmDestination()).show();}),10);add(card,ui.button("Quitar ubicación",false,null,()->{captureDetails();details.remove("deliveryLocation");try{store.details(details);render();}catch(Exception error){toast("No pudimos guardar el cambio.");}}),8);}add(parent,card,12);}
 
     private boolean typing(){View focus=getCurrentFocus();return focus instanceof EditText;}
     private void hideKeyboard(){((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(root.getWindowToken(),0);}
-    private boolean validStep(){if(step==0&&details.optString("fulfillment","pickup").equals("delivery")){try{store.fee(details);}catch(Exception error){toast(error.getMessage());return false;}if(details.optString("address").length()<4){error("address","Escribe una dirección o punto de encuentro.");return false;}if(details.optString("reference").length()<3){error("reference","Agrega una referencia fácil de reconocer.");return false;}}if(step==0&&details.optString("fulfillment","pickup").equals("delivery")){String problem=DeliveryDestination.problem(details,settings().optString("saleDate"));if(!problem.isEmpty()){toast(problem);render();return false;}}if(step==1){if(details.optString("customer").length()<2){error("customer","Escribe el nombre del pedido.");return false;}if(!SaleRules.validPhone(details.optString("phone"))){error("phone","Escribe 9 dígitos que empiecen con 9.");return false;}}return true;}
+    private boolean validStep() {
+        if (step == 0 && deliveryScreen()) {
+            try {
+                DeliveryDestination.verifiedZone(settings(), details);
+            } catch (Exception error) {
+                toast(error.getMessage());
+                return false;
+            }
+            if (details.optString("address").length() < 4) {
+                error("address", "Completa la dirección de entrega.");
+                return false;
+            }
+            if (details.optString("reference").length() < 3) {
+                error("reference", "Agrega una referencia fácil de reconocer.");
+                return false;
+            }
+            if (!DeliveryDestination.problem(details, settings().optString("saleDate")).isEmpty()) {
+                new AlertDialog.Builder(this).setTitle("¿El punto corresponde al destino?")
+                        .setMessage(details.optString("address") + "\nEl repartidor usará la ubicación confirmada.")
+                        .setNegativeButton("Revisar", null)
+                        .setPositiveButton("Confirmar punto", (dialog, which) -> {
+                            confirmDestination();
+                            if (DeliveryDestination.problem(details, settings().optString("saleDate")).isEmpty()) {
+                                advanceCheckout();
+                            }
+                        }).show();
+                return false;
+            }
+        }
+        if (step == 1) {
+            if (details.optString("customer").length() < 2) {
+                error("customer", "Escribe el nombre del pedido.");
+                return false;
+            }
+            if (!SaleRules.validPhone(details.optString("phone"))) {
+                error("phone", "Escribe 9 dígitos que empiecen con 9.");
+                return false;
+            }
+        }
+        return true;
+    }
     private void summaryLine(LinearLayout parent,String label,String value,boolean strong){LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);TextView name=ui.text(label,strong?19:15,NativeUi.INK,strong);row.addView(name,new LinearLayout.LayoutParams(0,-2,1));TextView amount=ui.text(value,strong?22:15,NativeUi.WINE,true);amount.setGravity(Gravity.RIGHT);row.addView(amount,new LinearLayout.LayoutParams(-2,-2));add(parent,row,10);}
-    private void updateSummary(){if(summary==null||!screen.equals("checkout"))return;summary.removeAllViews();add(summary,ui.text("TOTAL DE TU PEDIDO",12,NativeUi.WINE,true),0);summaryLine(summary,"Comida",cash(store.subtotal()),false);try{double fee=store.fee(details);summaryLine(summary,"Entrega",details.optString("fulfillment","pickup").equals("pickup")?"Recojo gratis":fee==0?"Gratis por promoción":cash(fee),false);summaryLine(summary,"Total",cash(store.subtotal()+fee),true);}catch(Exception missing){summaryLine(summary,"Entrega","Elige un sector",false);}}
+    private void updateSummary() {
+        if (summary == null || !screen.equals("checkout")) return;
+        summary.removeAllViews();
+        if (store.count() == 0) {
+            add(summary, ui.text("Solicitud sin cobro", 16, NativeUi.WINE, true), 0);
+            return;
+        }
+        add(summary, ui.text("TOTAL CON CUPO", 12, NativeUi.WINE, true), 0);
+        summaryLine(summary, "Comida", cash(store.subtotal()), false);
+        try {
+            double fee = store.fee(details);
+            summaryLine(summary, "Entrega", details.optString("fulfillment", "pickup").equals("pickup")
+                    ? "Recojo gratis" : fee == 0 ? "Gratis por promoción" : cash(fee), false);
+            summaryLine(summary, "Total", cash(store.subtotal() + fee), true);
+        } catch (Exception missing) {
+            summaryLine(summary, "Entrega", "Falta ubicar el destino", false);
+        }
+    }
     private String orderStatus(JSONObject order){
         String send=order.optString("sendState");if(send.equals("pending")||send.equals("device_pending"))return "Guardado · falta enviar a Emprendedora";if(send.equals("review"))return "Revisa tu solicitud";if(send.equals("legacy")||send.equals("unbound"))return "Revisar antes de enviar";if(send.equals("superseded"))return "Solicitud reemplazada";
         switch(order.optString("status")){case "registered":return "Pedido recibido · espera confirmación";case "confirmed":return "Pedido confirmado por la olla";case "preparing":case "ready":return "En preparación";case "sale_day":return "Día de venta";case "delivering":return "Delivery salió";case "pickup_available":return "Puedes recoger";case "delivered":return "Entregado";case "cancelled":return "Cancelado";default:return "Pendiente de envío";}
     }
     private void showOrders(){
         title("Tus pedidos","Fecha de venta, pago y entrega de tus compras.");add(content,ui.button(syncing?"Actualizando…":"Actualizar pedidos",false,"orders",()->syncDevice(true)),12);JSONArray orders=state().optJSONArray("orders");
-        if(orders.length()==0)empty("Todavía no hay pedidos","Elige tus productos y revisa la fecha de venta.");
-        for(int i=0;i<orders.length();i++){JSONObject order=orders.optJSONObject(i);LinearLayout card=ui.card();add(card,ui.text((order.optString("sendState").equals("sent")?"PEDIDO N.º ":"SOLICITUD ")+String.format(Locale.US,"%03d",order.optInt("number")),12,NativeUi.CORAL,true),0);add(card,ui.heading(orderStatus(order),20),7);add(card,ui.text("Venta: "+SaleSchedule.day(order),15,NativeUi.WINE,true),8);add(card,ui.text(order.optString("customer")+" · "+cash(order.optDouble("total")),16,NativeUi.INK,true),6);add(card,ui.text(order.optBoolean("paid")?"Pago confirmado":"Pago pendiente",13,NativeUi.MUTED,false),6);add(card,ui.button("Ver mi pedido",false,null,()->go("receipt",order.optString("id"))),12);add(content,card,14);}
+        JSONArray extras = state().optJSONArray("extraRequests");
+        List<JSONObject> history = new ArrayList<>();
+        for (int i = 0; i < orders.length(); i++) {
+            JSONObject order = orders.optJSONObject(i);
+            if (order != null) history.add(order);
+        }
+        for (int i = extras == null ? -1 : extras.length() - 1; i >= 0; i--) {
+            JSONObject extra = extras.optJSONObject(i);
+            if (extra != null) history.add(extra);
+        }
+        if (history.isEmpty()) {
+            empty("Todavía no hay pedidos", "Elige tus productos y revisa la fecha de venta.");
+        }
+        history.sort(Comparator.comparingLong(this::submittedTime).reversed());
+        for (JSONObject order : history) {
+            if (order.optBoolean("extra")) {
+                addExtraLink(content, order);
+                continue;
+            }
+            LinearLayout card = ui.card();
+            boolean sent = "sent".equals(order.optString("sendState"));
+            String label = sent ? "Pedido #" : "Solicitud #";
+            add(card, ui.text(label + String.format(Locale.US, "%03d", order.optInt("number")),
+                    13, NativeUi.CORAL, true), 0);
+            add(card, ui.heading(orderStatus(order), 20), 6);
+            addSubmittedTime(card, order);
+            add(card, ui.text("Venta: " + SaleSchedule.day(order), 14, NativeUi.WINE, true), 6);
+            add(card, ui.text(order.optString("customer") + " · " + cash(order.optDouble("total")),
+                    16, NativeUi.INK, true), 6);
+            String paymentStatus = receiptPaymentStatus(order);
+            if (!paymentStatus.isEmpty()) add(card, ui.text(paymentStatus, 13, NativeUi.MUTED, false), 6);
+            boolean walletPayment = sent && "Pago pendiente".equals(paymentStatus) && !order.optString("payment").equals("cash");
+            add(card, ui.button(walletPayment ? "Ver pedido y pago" : "Ver mi pedido", false, null,
+                    () -> go("receipt", order.optString("requestId", order.optString("id")))), 10);
+            add(content, card, 14);
+        }
     }
+
+    private void addExtraLink(LinearLayout parent, JSONObject extra) {
+        LinearLayout card = ui.message("Solicitud de cupos extra", extraItemsLabel(extra), NativeUi.SOFT);
+        add(card, ui.text(extraStatus(extra), 14, NativeUi.WINE, true), 6);
+        if ("approved".equals(extra.optString("status"))) addExtraQuote(card, extra);
+        addSubmittedTime(card, extra);
+        add(card, ui.text("Venta: " + SaleSchedule.day(extra), 13, NativeUi.MUTED, false), 4);
+        String baseId = extra.optString("baseRequestId");
+        JSONArray orders = state().optJSONArray("orders");
+        for (int i = 0; extra.optInt("sameDeliveryOrderNumber") <= 0 && !baseId.isEmpty()
+                && orders != null && i < orders.length(); i++) {
+            JSONObject order = orders.optJSONObject(i);
+            if (order != null && baseId.equals(order.optString("requestId"))
+                    && order.optString("sendState").equals("sent")) {
+                add(card, ui.text("Pedido asociado #" + order.optInt("number"), 13, NativeUi.MUTED, false), 4);
+                break;
+            }
+        }
+        add(card, ui.button("Ver solicitud", false, null, () -> go("extras", extra.optString("id"))), 8);
+        add(parent, card, 12);
+    }
+
+    private String extraItemsLabel(JSONObject extra) {
+        StringBuilder text = new StringBuilder();
+        JSONArray items = extra.optJSONArray("items");
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) continue;
+            if (text.length() > 0) text.append("\n");
+            text.append(item.optInt("quantity")).append(" × ").append(item.optString("name"));
+        }
+        return text.toString();
+    }
+
+    private void addSubmittedTime(LinearLayout parent, JSONObject entry) {
+        long time = submittedTime(entry);
+        if (time <= 0) return;
+        add(parent, ui.text("Hecho el " + SaleSchedule.display(SaleSchedule.stamp(time), false),
+                13, NativeUi.MUTED, false), 5);
+    }
+
+    private long submittedTime(JSONObject entry) {
+        return entry.optLong("submittedAt", entry.optLong("createdAt"));
+    }
+
+    private JSONObject extraRequest(String id) {
+        JSONArray extras = state().optJSONArray("extraRequests");
+        for (int i = 0; extras != null && i < extras.length(); i++) {
+            JSONObject extra = extras.optJSONObject(i);
+            if (extra != null && id.equals(extra.optString("id"))) return extra;
+        }
+        return null;
+    }
+
+    private String extraStatus(JSONObject extra) {
+        if ("approved".equals(extra.optString("status"))) return "Aceptada";
+        if ("rejected".equals(extra.optString("status"))) return "La olla no puede atender esta solicitud";
+        return "sent".equals(extra.optString("sendState")) ? "Por confirmar · sin cobro"
+                : "Guardada · pendiente de enviar";
+    }
+
+    private void addExtraQuote(LinearLayout parent, JSONObject extra) {
+        double amount = extra.optDouble("extraAmount");
+        String payment = !Double.isFinite(amount) ? "Monto por coordinar"
+                : amount == 0 ? "Extras sin costo" : "Monto adicional: " + cash(amount);
+        add(parent, ui.text(payment, 16, NativeUi.WINE, true), 6);
+        int linkedOrder = extra.optInt("sameDeliveryOrderNumber");
+        add(parent, ui.text(linkedOrder > 0 ? "Se entrega junto al pedido #" + linkedOrder
+                : "Entrega por coordinar con la olla", 14, NativeUi.INK, false), 4);
+    }
+
+    private void showExtrasReceipt() {
+        JSONObject extra = extraRequest(selectedId);
+        if (extra == null) {
+            empty("Solicitud no disponible", "Vuelve a la lista de pedidos.");
+            primary("Ver mis pedidos", () -> go("orders", ""));
+            return;
+        }
+        title("Cupos extra", "");
+        add(content, ui.message("Estado de la solicitud", extraStatus(extra), NativeUi.GOLD), 12);
+        if ("approved".equals(extra.optString("status"))) {
+            LinearLayout quote = ui.card();
+            addExtraQuote(quote, extra);
+            add(content, quote, 8);
+        }
+        addSubmittedTime(content, extra);
+        add(content, ui.text(SaleSchedule.day(extra), 14, NativeUi.WINE, true), 8);
+        JSONArray items = extra.optJSONArray("items");
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item != null) add(content, ui.text(item.optInt("quantity") + " × " + item.optString("name"),
+                    16, NativeUi.INK, true), 8);
+        }
+        if (!extra.optString("baseRequestId").isEmpty()) {
+            note("El total del pedido con cupo se mantiene por separado.");
+        }
+        if ("approved".equals(extra.optString("status")) && extra.optDouble("extraAmount") > 0) {
+            note("Coordina el pago de los extras con la olla.");
+        }
+        String contact = baseSettings().optString("phone");
+        if ("approved".equals(extra.optString("status")) && SaleRules.validPhone(contact)) {
+            add(content, ui.button("Llamar a la olla", false, null, () -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + contact)));
+                } catch (ActivityNotFoundException error) {
+                    toast("No hay una app de llamadas disponible.");
+                }
+            }), 10);
+        }
+        if ("pending".equals(extra.optString("status"))) {
+            boolean sent = "sent".equals(extra.optString("sendState"));
+            note(sent ? "Consulta si la olla ya aceptó o rechazó estas unidades."
+                    : "La solicitud se guardó en el celular. Puedes intentar enviarla otra vez.");
+            primary(sent ? "Consultar respuesta" : "Reintentar envío", () -> consultExtraRequest(extra));
+        } else {
+            primary("Volver a mis pedidos", () -> go("orders", ""));
+        }
+    }
+
+    private void consultExtraRequest(JSONObject request) {
+        if (syncing) {
+            toast("Espera a que termine la actualización.");
+            return;
+        }
+        syncing = true;
+        boolean sent = "sent".equals(request.optString("sendState"));
+        worker.execute(() -> {
+            String message;
+            try {
+                JSONObject reply = exchangeExtraRequest(request);
+                switch (reply.optString("status")) {
+                    case "approved": message = "La olla aceptó tu solicitud."; break;
+                    case "rejected": message = "La olla no puede atender tu solicitud."; break;
+                    default: message = sent ? "Tu solicitud sigue por confirmar." : "Solicitud enviada a Emprendedora.";
+                }
+            } catch (Exception error) {
+                message = extraBridgeError(error, sent);
+            }
+            String result = message;
+            runOnUiThread(() -> {
+                syncing = false;
+                if (isFinishing() || isDestroyed()) return;
+                if (screen.equals("extras") && selectedId.equals(request.optString("id"))) render();
+                toast(result);
+            });
+        });
+    }
+
+    private JSONObject exchangeExtraRequest(JSONObject request) throws Exception {
+        String id = request.optString("id");
+        JSONObject reply = "sent".equals(request.optString("sendState"))
+                ? DeviceBridgeClient.extraRequest(this, id) : DeviceBridgeClient.requestMore(this, request);
+        store.acceptExtraReply(id, reply);
+        return reply;
+    }
+
+    private String extraBridgeError(Exception error, boolean sent) {
+        String detail = error.getMessage();
+        if (error instanceof SecurityException || (detail != null && detail.contains("Opción no disponible"))) {
+            return "Instala las versiones actualizadas de Pedidos y Emprendedora en este celular.";
+        }
+        if (detail != null && !detail.isEmpty() && !detail.equals("No pudimos intercambiar los datos.")) {
+            return detail;
+        }
+        return sent ? "No pudimos consultar la respuesta. Prueba otra vez."
+                : "No pudimos enviar la solicitud. Sigue guardada en este celular.";
+    }
+
     private JSONObject currentOrder(){JSONArray orders=state().optJSONArray("orders");for(int i=0;i<orders.length();i++)if(orders.optJSONObject(i).optString("id").equals(selectedId)||orders.optJSONObject(i).optString("requestId").equals(selectedId))return orders.optJSONObject(i);return null;}
     private void showReceipt(){
         JSONObject order=currentOrder();if(order==null){go("orders","");return;}String send=order.optString("sendState");boolean accepted=send.equals("sent");String status=order.optString("status");
         String subtitle=!accepted?"Se conserva en este celular. El cupo todavía no está confirmado.":status.equals("registered")?"La olla recibió tu pedido. Espera la confirmación para darlo por aceptado.":status.equals("cancelled")?"La olla canceló este pedido. Revisa el detalle antes de volver a pedir.":"La olla confirmó tu pedido.";
         add(content,ui.message(orderStatus(order),subtitle,NativeUi.GOLD),0);
+        if (accepted && !status.equals("registered") && !status.equals("cancelled") && !order.optBoolean("paid")) {
+            if (order.optString("payment").equals("cash")) note("Paga " + cash(order.optDouble("total")) + " al recibir.");
+            else showWalletPayment(order);
+        }
+        JSONObject extra = extraRequest(order.optString("extraRequestId"));
+        if (extra != null) addExtraLink(content, extra);
         add(content,ui.heading((accepted?"Pedido ":"Solicitud ")+String.format(Locale.US,"%03d",order.optInt("number")),25),19);
+        addSubmittedTime(content, order);
         LinearLayout food=ui.card();JSONArray items=order.optJSONArray("items");for(int i=0;items!=null&&i<items.length();i++){JSONObject item=items.optJSONObject(i);summaryLine(food,item.optInt("quantity")+" × "+item.optString("name"),cash(item.optInt("quantity")*item.optDouble("price")),false);}summaryLine(food,"Entrega",cash(order.optDouble("fee")),false);summaryLine(food,"Total",cash(order.optDouble("total")),true);add(content,food,14);
         String place=order.optString("fulfillment","pickup").equals("delivery")?DeliveryDestination.typeLabel(order.optString("destinationType","home"))+" · "+order.optString("zone")+" · "+order.optString("address")+"\nReferencia: "+order.optString("reference"):order.optString("pickup","Manka Kusi · Manchay");
         add(content,ui.message("DÍA DE VENTA",SaleSchedule.day(order),NativeUi.GOLD),12);if(!order.optString("fulfillment","pickup").equals("delivery"))add(content,ui.message("PUEDES RECOGER",SaleSchedule.window(order),NativeUi.CARD),12);
         add(content,ui.message("ENTREGA",place,NativeUi.CARD),12);if(order.optString("fulfillment").equals("delivery")){destinationCard(content,order,false);if(!order.optString("driver").isEmpty())note("Reparte: "+order.optString("driver"));if(!order.optString("deliveryWindow").isEmpty())note("Horario acordado: "+order.optString("deliveryWindow"));}
-        add(content,ui.message(order.optBoolean("paid")?"PAGO CONFIRMADO":"PAGO PENDIENTE",order.optBoolean("paid")?"La olla registró el dinero recibido.":"Elegir Yape, Plin o efectivo no realiza un cobro.",NativeUi.SOFT),12);
+        String paymentStatus = receiptPaymentStatus(order);
+        if (!paymentStatus.isEmpty()) add(content, ui.message(paymentStatus,
+                order.optBoolean("paid") ? "La olla registró el dinero recibido." : "", NativeUi.SOFT), 12);
         add(content,ui.button("Volver a pedir en 1 toque",false,"cart",()->{try{store.reorderToCart(order.optString("id"));details=store.snapshot().optJSONObject("details");go("cart","");toast("Productos cargados al carrito.");}catch(Exception error){toast(error.getMessage());}}),12);
-        if(accepted&&!order.optBoolean("paid")&&!order.optString("payment").equals("cash")&&!order.optString("status").equals("cancelled")){
-            JSONObject s=settings();
-            String encoded=s.optString("paymentImage");
-            String walletPhone=s.optString("walletPhone",s.optString("phone"));
-            String walletHolder=s.optString("walletHolder",s.optString("name","Manka Kusi"));
-            String payMethod=order.optString("payment").equals("yape")?"Yape":"Plin";
-            if(!encoded.isEmpty()){ImageView qr=new ImageView(this);qr.setScaleType(ImageView.ScaleType.FIT_CENTER);qr.setImageBitmap(images.thumbnail(encoded,dp(260)));qr.setBackgroundColor(Color.WHITE);qr.setContentDescription("QR de pago de la olla");add(content,qr,14);qr.getLayoutParams().height=dp(240);}
-            LinearLayout wallet=ui.message("DATOS PARA PAGAR CON "+payMethod.toUpperCase(Locale.ROOT),
-                    "Titular: "+walletHolder+(SaleRules.validPhone(walletPhone)?"\nCelular: "+walletPhone:"")+"\nMonto exacto: "+cash(order.optDouble("total")),NativeUi.CARD);
-            if(SaleRules.validPhone(walletPhone)){
-                add(wallet,ui.button("Copiar número ("+walletPhone+")",false,"pay",()->{
-                    android.content.ClipboardManager cm=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
-                    if(cm!=null)cm.setPrimaryClip(android.content.ClipData.newPlainText("Celular "+payMethod,walletPhone));
-                    toast("Número "+walletPhone+" copiado. Monto: "+cash(order.optDouble("total")));
-                }),10);
-            }
-            add(wallet,ui.button("Abrir "+payMethod,false,"pay",()->openWalletApp(order.optString("payment"))),8);
-            add(content,wallet,12);
-            note("Verifica el titular y el monto antes de transferir. La olla confirmará tu abono.");
-        }
         if(send.equals("review")){note(order.optString("syncError","Cambió la disponibilidad. Revisa antes de crear otra solicitud."));}
         if(Arrays.asList("review","legacy","unbound").contains(send))add(content,ui.button("Revisar productos y datos",false,null,()->{try{store.restoreToCart(order.optString("id"));details=store.snapshot().optJSONObject("details");go("cart","");}catch(Exception error){toast(error.getMessage());}}),14);
         String contact=settings().optString("phone");if(SaleRules.validPhone(contact)){add(content,ui.button("Escribir por WhatsApp",false,"share",()->openWhatsApp(contact,order)),12);add(content,ui.button("Llamar a la olla",false,null,()->{try{startActivity(new Intent(Intent.ACTION_DIAL,android.net.Uri.parse("tel:"+contact)));}catch(Exception error){toast("No hay una app de llamadas disponible.");}}),10);}
         primary((syncing||submittingOrder)?"Enviando…":send.equals("sent")?"Actualizar pedido":"Reintentar envío",()->syncDevice(true));
     }
+    private String receiptPaymentStatus(JSONObject order) {
+        if (order.optBoolean("paid")) return "Pago confirmado";
+        String status = order.optString("status");
+        if (status.equals("cancelled")) return "";
+        if (!order.optString("sendState").equals("sent") || status.equals("registered")) return "Cobro tras confirmar";
+        return "Pago pendiente";
+    }
+
+    private void showWalletPayment(JSONObject order) {
+        JSONObject shop = baseSettings();
+        String encoded = shop.optString("paymentImage");
+        String method = order.optString("payment");
+        String wallet = "yape".equals(method) ? "Yape" : "Plin";
+        String phone = shop.optString("walletPhone");
+        String holder = shop.optString("walletHolder", shop.optString("name"));
+        String amount = cash(order.optDouble("total"));
+        LinearLayout card = ui.message("Paga con " + wallet, "Monto exacto: " + amount, NativeUi.CARD);
+        if (!encoded.isEmpty()) {
+            TextView showQr = ui.button("Ver QR de pago", true, "qr", () -> {
+                Bitmap bitmap = ImageTools.decode(encoded);
+                if (bitmap == null) {
+                    toast("No pudimos abrir el QR de la olla.");
+                    return;
+                }
+                ImageView image = new ImageView(this);
+                image.setImageBitmap(bitmap);
+                image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                image.setBackgroundColor(Color.WHITE);
+                image.setContentDescription("QR de pago de " + holder);
+                LinearLayout view = ui.column();
+                view.addView(image, new LinearLayout.LayoutParams(-1, dp(280)));
+                AlertDialog dialog = new AlertDialog.Builder(this).setTitle(wallet + " · " + amount)
+                        .setView(view).setPositiveButton("Cerrar", null).create();
+                dialog.setOnDismissListener(ignored -> {
+                    image.setImageDrawable(null);
+                    bitmap.recycle();
+                });
+                dialog.show();
+            });
+            showQr.setTag("receipt:qr");
+            add(card, showQr, 8);
+        }
+        if (SaleRules.validPhone(phone)) {
+            add(card, ui.button("Copiar número " + phone, false, "pay", () -> {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText(wallet, phone));
+                toast("Número copiado. Monto: " + amount);
+            }), 8);
+        }
+        if (!encoded.isEmpty() || SaleRules.validPhone(phone)) {
+            add(card, ui.text("Titular: " + holder, 14, NativeUi.MUTED, false), 8);
+            add(card, ui.button("Abrir " + wallet, false, "pay", () -> openWalletApp(method)), 8);
+        } else {
+            add(card, ui.text("La olla todavía no compartió sus datos de pago. Coordina con ella antes de transferir.",
+                    14, NativeUi.MUTED, false), 8);
+        }
+        add(content, card, 12);
+    }
+
     private boolean stockConflict(String message){String m=message==null?"":message.toLowerCase(Locale.ROOT);return m.contains("cupo")||m.contains("stock")||m.contains("agot");}
     private void openWalletApp(String method){
         String[] packages="yape".equals(method)?new String[]{"com.bcp.innovacxion.yapeapp"}:new String[]{"com.interbank.plin","com.bbva.nxt_peru","com.scotiabank.android"};
@@ -304,7 +1263,63 @@ public class CustomerActivity extends Activity {
     }
     private void registerBridgeObserver(){if(bridgeObserver!=null)return;bridgeObserver=new ContentObserver(handler){@Override public void onChange(boolean selfChange){handler.removeCallbacks(bridgeRefresh);handler.postDelayed(bridgeRefresh,250);}};getContentResolver().registerContentObserver(BRIDGE,true,bridgeObserver);}
     private void unregisterBridgeObserver(){if(bridgeObserver==null)return;getContentResolver().unregisterContentObserver(bridgeObserver);bridgeObserver=null;handler.removeCallbacks(bridgeRefresh);}
-    private void syncDevice(boolean notify){
-        if(syncing||submittingOrder||store==null)return;captureDetails();syncing=true;String before=store.snapshot().toString();worker.execute(()->{String problem="";try{store.acceptDeviceCatalog(DeviceBridgeClient.catalog(this));JSONArray pending=store.pending();for(int i=0;i<pending.length();i++){JSONObject order=pending.getJSONObject(i);store.acceptOrder(order.optString("id"),DeviceBridgeClient.placeOrder(this,order));}JSONArray orders=store.snapshot().optJSONArray("orders");for(int i=0;i<orders.length();i++){JSONObject order=orders.optJSONObject(i);if(!order.optString("sendState").equals("sent"))continue;if(order.optString("status").equals("delivered")||order.optString("status").equals("cancelled"))continue;store.acceptOrder(order.optString("id"),DeviceBridgeClient.order(this,order.optString("id")));}store.acceptDeviceCatalog(DeviceBridgeClient.catalog(this));online=true;}catch(Exception error){online=false;problem=error.getMessage()==null?"No encontramos ManchApp Emprendedora en este celular.":error.getMessage();}String message=problem;runOnUiThread(()->{syncing=false;syncMessage=message;if(isFinishing()||isDestroyed())return;boolean changed=!store.snapshot().toString().equals(before);if(!typing()&&(notify||changed)){int y=scroll==null?0:scroll.getScrollY();render();if(scroll!=null)scroll.post(()->scroll.scrollTo(0,y));}if(notify)toast(message.isEmpty()?"Productos y pedidos actualizados en este celular.":message);});});
+    private void syncDevice(boolean notify) {
+        if (syncing || store == null) return;
+        captureDetails();
+        syncing = true;
+        String before = store.snapshot().toString();
+        worker.execute(() -> {
+            String problem = "";
+            try {
+                store.acceptDeviceCatalog(DeviceBridgeClient.catalog(this));
+                JSONArray pending = store.pending();
+                for (int i = 0; i < pending.length(); i++) {
+                    JSONObject order = pending.getJSONObject(i);
+                    String id = order.optString("id");
+                    try {
+                        store.acceptOrder(id, DeviceBridgeClient.placeOrder(this, order));
+                    } catch (Exception error) {
+                        String message = error.getMessage() == null ? "No pudimos enviar el pedido." : error.getMessage();
+                        if (stockConflict(message) || message.startsWith("Cambió la fecha")) {
+                            store.markProblem(id, message + " Puedes revisar los productos y solicitar lo que falte.");
+                        }
+                        problem = message;
+                    }
+                }
+
+                JSONArray orders = store.snapshot().getJSONArray("orders");
+                for (int i = 0; i < orders.length(); i++) {
+                    JSONObject order = orders.getJSONObject(i);
+                    String status = order.optString("status");
+                    if (!order.optString("sendState").equals("sent") || status.equals("delivered") || status.equals("cancelled")) continue;
+                    store.acceptOrder(order.optString("id"), DeviceBridgeClient.order(this, order.optString("id")));
+                }
+                store.acceptDeviceCatalog(DeviceBridgeClient.catalog(this));
+                online = true;
+            } catch (Exception error) {
+                online = false;
+                problem = error.getMessage() == null ? "No encontramos Emprendedora en este celular." : error.getMessage();
+            }
+            JSONArray requests = store.extraRequestsToSync();
+            for (int i = 0; i < requests.length(); i++) {
+                JSONObject request = requests.optJSONObject(i);
+                try {
+                    exchangeExtraRequest(request);
+                } catch (Exception error) {
+                    if (problem.isEmpty()) problem = extraBridgeError(error, "sent".equals(request.optString("sendState")));
+                }
+            }
+            String message = problem;
+            runOnUiThread(() -> {
+                syncing = false;
+                boolean justSubmitted = submittingOrder;
+                submittingOrder = false;
+                syncMessage = message;
+                if (isFinishing() || isDestroyed()) return;
+                boolean changed = !store.snapshot().toString().equals(before);
+                if (!typing() && (notify || changed || justSubmitted)) render();
+                if (notify && !message.isEmpty()) toast(message);
+            });
+        });
     }
 }

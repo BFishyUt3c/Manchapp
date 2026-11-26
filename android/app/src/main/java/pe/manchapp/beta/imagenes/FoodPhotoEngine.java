@@ -15,6 +15,7 @@ final class FoodPhotoEngine implements AutoCloseable {
     private final Context context;
     private Mat original,enhanced,mask,plainMask,completeMask,smallMask,sourceAlpha,manualMask;
     private boolean includeObjects=false;
+    private boolean angledBackground = true;
     private Net network;
     long maskMillis=0;
     int maskRuns=0;
@@ -47,15 +48,38 @@ final class FoodPhotoEngine implements AutoCloseable {
         if(amount==0)return renderSource(original,background);if(amount==1)return renderSource(enhanced,background);
         Mat blended=new Mat();try{Core.addWeighted(original,1-amount,enhanced,amount,0,blended);return renderSource(blended,background);}finally{blended.release();}
     }
-    private Bitmap renderSource(Mat source,String background)throws IOException{
-        if(background.equals("original"))return sourceAlpha==null?bitmap(source):isolated(source,sourceAlpha,false);
-        ensureMask();if(background.equals("transparent"))return isolated(source,mask,sourceAlpha==null&&manualMask==null);
-        Mat back=new Mat();Bitmap texture=null;
-        try{
-            if(background.equals("blur"))Imgproc.GaussianBlur(source,back,new Size(0,0),Math.max(5,source.cols()/60.0));
-            else{texture=texture(source.cols(),source.rows(),background);Utils.bitmapToMat(texture,back);Imgproc.cvtColor(back,back,Imgproc.COLOR_RGBA2RGB);}
-            return composite(source,back,mask);
-        }finally{if(texture!=null)texture.recycle();back.release();}
+    void setAngledBackground(boolean value) {
+        angledBackground = value;
+    }
+
+    private Bitmap renderSource(Mat source, String background) throws IOException {
+        if (background.equals("original")) return sourceAlpha == null ? bitmap(source) : isolated(source, sourceAlpha, false);
+        ensureMask();
+        boolean clean = sourceAlpha == null && manualMask == null;
+        if (background.equals("transparent")) return isolated(source, mask, clean);
+        if (PhotoBackgrounds.isPreset(background)) {
+            Bitmap cutout = isolated(source, mask, clean);
+            Bitmap scene = null;
+            try {
+                scene = PhotoBackgrounds.render(context, source.cols(), source.rows(), background, angledBackground);
+                Canvas canvas = new Canvas(scene);
+                PhotoBackgrounds.drawContactShadow(canvas, new RectF(CompositionDocument.visibleBounds(cutout)), angledBackground);
+                canvas.drawBitmap(cutout, 0, 0, null);
+                return scene;
+            } catch (IOException | RuntimeException | OutOfMemoryError error) {
+                if (scene != null) scene.recycle();
+                throw error;
+            } finally {
+                cutout.recycle();
+            }
+        }
+        Mat back = new Mat();
+        try {
+            Imgproc.GaussianBlur(source, back, new Size(0, 0), Math.max(5, source.cols()/60.0));
+            return composite(source, back, mask);
+        } finally {
+            back.release();
+        }
     }
     void setManualMask(Bitmap bitmap)throws IOException{if(bitmap.getWidth()!=original.cols()||bitmap.getHeight()!=original.rows())throw new IOException("Este recorte no coincide con la foto.");Mat rgba=new Mat(),alpha=new Mat(),next=new Mat();try{Utils.bitmapToMat(bitmap,rgba,true);Core.extractChannel(rgba,alpha,3);alpha.convertTo(next,CvType.CV_32F,1/255.0);if(manualMask!=null)manualMask.release();manualMask=next;next=null;mask=manualMask;}finally{rgba.release();alpha.release();if(next!=null)next.release();}}
     void includeObjects(boolean value){includeObjects=value;mask=manualMask!=null?manualMask:sourceAlpha!=null?sourceAlpha:value?completeMask:plainMask;}
@@ -136,14 +160,6 @@ final class FoodPhotoEngine implements AutoCloseable {
     private static Bitmap composite(Mat foreground,Mat background,Mat mask){
         int width=foreground.cols(),height=foreground.rows();Bitmap result=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);byte[] front=new byte[width*3],back=new byte[width*3];float[] alpha=new float[width];int[] row=new int[width];
         for(int y=0;y<height;y++){foreground.get(y,0,front);background.get(y,0,back);mask.get(y,0,alpha);for(int x=0;x<width;x++){float a=Math.max(0,Math.min(1,alpha[x]));int at=x*3;int r=Math.round((front[at]&255)*a+(back[at]&255)*(1-a)),g=Math.round((front[at+1]&255)*a+(back[at+1]&255)*(1-a)),b=Math.round((front[at+2]&255)*a+(back[at+2]&255)*(1-a));row[x]=Color.rgb(r,g,b);}result.setPixels(row,0,width,0,y,width,1);}return result;
-    }
-    static Bitmap texture(int width,int height,String kind){
-        Bitmap result=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);int[] row=new int[width];
-        for(int y=0;y<height;y++){for(int x=0;x<width;x++){double light=1-.10*Math.pow((x-width*.42)/Math.max(1,width),2)-.08*y/Math.max(1.0,height);int r,g,b;
-            if(kind.equals("wood")){double grain=7*Math.sin(y*.16+Math.sin(x*.009)*1.8)+3*Math.sin(y*.83+x*.012);double plank=y%Math.max(1,height/4)<2?-22:0;r=(int)((177+grain+plank)*light);g=(int)((126+grain+plank)*light);b=(int)((78+grain+plank)*light);}
-            else if(kind.equals("marble")){double wave=Math.sin(x*.016+Math.sin(y*.011)*2.5+y*.012),vein=Math.pow(Math.max(0,1-Math.abs(wave)*12),2)*27;r=(int)((233-vein)*light);g=(int)((229-vein)*light);b=(int)((220-vein*.8)*light);}
-            else{int size=Math.max(12,width/12);boolean check=(x/size+y/size)%2==0;double weave=2*Math.sin(x*2)+2*Math.sin(y*2);r=(int)(((check?235:173)+weave)*light);g=(int)(((check?213:91)+weave)*light);b=(int)(((check?174:69)+weave)*light);}
-            row[x]=Color.rgb(Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b)));}result.setPixels(row,0,width,0,y,width,1);}return result;
     }
     Bitmap maskPreview()throws IOException{ensureMask();Mat view=new Mat();try{mask.convertTo(view,CvType.CV_8U,255);return bitmap(view);}finally{view.release();}}
     @Override public void close(){if(original!=null)original.release();if(enhanced!=null)enhanced.release();if(plainMask!=null)plainMask.release();if(completeMask!=null)completeMask.release();if(smallMask!=null)smallMask.release();if(sourceAlpha!=null)sourceAlpha.release();if(manualMask!=null)manualMask.release();manualMask=null;original=null;enhanced=null;mask=null;plainMask=null;completeMask=null;smallMask=null;sourceAlpha=null;network=null;}

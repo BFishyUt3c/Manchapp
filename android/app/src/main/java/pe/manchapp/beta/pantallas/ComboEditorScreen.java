@@ -46,7 +46,7 @@ final class ComboEditorScreen {
             Bitmap exported = null;
             CompositionDocument document = null;
             try {
-                background = FoodPhotoEngine.texture(960, 960, "cloth");
+                background = PhotoBackgrounds.render(activity, 960, 960, "cloth", true);
                 for (JSONObject product : products) {
                     Bitmap source = ImageTools.productPhoto(activity, product, 960);
                     if (source == null) continue;

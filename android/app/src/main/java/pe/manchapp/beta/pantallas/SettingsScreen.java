@@ -297,10 +297,14 @@ final class SettingsScreen {
         shell.add(content, preview, 20);
         preview.getLayoutParams().height = shell.dp(315);
         shell.add(content, shell.button("Elegir otra imagen", false, () -> shell.choosePhoto("qr", false)), 14);
-        shell.note("Seleccionar esta imagen no realiza un cobro. El QR anterior se conserva hasta que guardes el cambio.");
+        shell.note("Guardar esta imagen habilita el pago con QR si tu venta estaba configurada solo en efectivo.");
         shell.primary("Guardar mi QR", () -> {
             JSONObject settings = shell.data().optJSONObject("settings");
             AppShell.put(settings, "paymentImage", shell.pendingQr());
+            if (settings.optBoolean("cashOnly") || settings.optString("paymentMode").equals("cash")) {
+                AppShell.put(settings, "paymentMode", "both");
+                AppShell.put(settings, "cashOnly", false);
+            }
             if (shell.enqueue("settings", settings, "payments")) {
                 shell.pendingQr("");
                 shell.qrDraftFile().delete();

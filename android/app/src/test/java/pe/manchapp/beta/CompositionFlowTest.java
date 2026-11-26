@@ -51,6 +51,54 @@ public class CompositionFlowTest {
         doc.close();
     }
 
+    @Test public void tabletopPresetsCoverPortraitAndLandscapeInBothPerspectives() throws Exception {
+        for (String kind : new String[]{"wood", "marble", "cloth"}) {
+            for (int[] size : new int[][]{{216, 336}, {336, 216}}) {
+                int width = size[0], height = size[1];
+                Bitmap overhead = PhotoBackgrounds.render(context, width, height, kind, false);
+                Bitmap angled = PhotoBackgrounds.render(context, width, height, kind, true);
+                try {
+                    assertFalse(overhead.sameAs(angled));
+                    for (int x : new int[]{0, width - 1}) {
+                        for (int y : new int[]{0, height - 1}) {
+                            assertEquals(255, Color.alpha(overhead.getPixel(x, y)));
+                            assertEquals(255, Color.alpha(angled.getPixel(x, y)));
+                        }
+                    }
+                } finally {
+                    overhead.recycle();
+                    angled.recycle();
+                }
+            }
+        }
+    }
+
+    @Test public void contactShadowFollowsTheProductAndPersistsWithTheComposition() throws Exception {
+        CompositionDocument doc = CompositionDocument.create(context, product, back);
+        String id = doc.layers().getJSONObject(0).getString("id");
+        RectF bounds = doc.selectionRect(doc.layer(id));
+        int x = Math.round(bounds.centerX()), y = Math.round(bounds.bottom + 2);
+        Bitmap shaded = doc.export();
+        try {
+            assertTrue(Color.blue(shaded.getPixel(x, y)) < Color.blue(Color.BLUE));
+            assertEquals(Color.RED, shaded.getPixel(100, 50));
+        } finally {
+            shaded.recycle();
+        }
+        doc.state.put("contactShadow", false);
+        doc.save();
+        CompositionDocument reopened = CompositionDocument.open(context, doc.id());
+        Bitmap unshaded = reopened.export();
+        try {
+            assertEquals(Color.BLUE, unshaded.getPixel(x, y));
+            assertFalse(reopened.contactShadow());
+        } finally {
+            unshaded.recycle();
+            doc.close();
+            reopened.close();
+        }
+    }
+
     @Test public void actualDragMovesOnlySelectedProductAndPersistsOnRelease()throws Exception{
         CompositionDocument doc=CompositionDocument.create(context,product,back);String id=doc.layers().getJSONObject(0).getString("id");final int[] saved={0};PhotoCompositionView view=new PhotoCompositionView(context,doc,id,new PhotoCompositionView.Listener(){public void selected(){}public void failed(){fail("Composition cannot fail while drawing");}public void changed(String before){try{doc.save();saved[0]++;}catch(Exception error){throw new RuntimeException(error);}}});FrameLayout host=new FrameLayout(context);host.addView(view,new FrameLayout.LayoutParams(-1,-1));host.measure(View.MeasureSpec.makeMeasureSpec(720,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));host.layout(0,0,720,800);
         long now=android.os.SystemClock.uptimeMillis();for(int i=0;i<3;i++){MotionEvent event=MotionEvent.obtain(now,now+i*30,i==0?MotionEvent.ACTION_DOWN:i==1?MotionEvent.ACTION_MOVE:MotionEvent.ACTION_UP,i==0?360:460,400,0);assertTrue(view.onTouchEvent(event));event.recycle();}assertEquals(1,saved[0]);assertTrue(doc.layer(id).getDouble("x")>.6);assertEquals(0,doc.state.getDouble("bgX"),0);assertEquals(doc.layer(id).getDouble("x"),CompositionDocument.open(context,doc.id()).layer(id).getDouble("x"),0);

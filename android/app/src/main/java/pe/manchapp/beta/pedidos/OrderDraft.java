@@ -27,7 +27,13 @@ final class OrderDraft {
         if(mode.equals("delivery")){
             if(details.optString("address").length()<4||details.optString("reference").length()<3)throw new Exception("Completa dirección y referencias para llegar.");
             String problem=DeliveryDestination.problem(details,chosenSchedule.optString("saleDate"));if(!problem.isEmpty())throw new Exception(problem);
-            JSONObject zone=null;JSONArray zones=settings.optJSONArray("zones");for(int i=0;zones!=null&&i<zones.length();i++)if(zones.getJSONObject(i).optString("id").equals(details.optString("zoneId"))&&zones.getJSONObject(i).optBoolean("enabled"))zone=zones.getJSONObject(i);
+            JSONObject zone=null;
+            if (!manual) {
+                zone = DeliveryDestination.verifiedZone(settings, details);
+                details.put("zoneId", zone.getString("id"));
+            } else {
+                JSONArray zones=settings.optJSONArray("zones");for(int i=0;zones!=null&&i<zones.length();i++)if(zones.getJSONObject(i).optString("id").equals(details.optString("zoneId"))&&zones.getJSONObject(i).optBoolean("enabled"))zone=zones.getJSONObject(i);
+            }
             if(zone==null)throw new Exception("Elige un sector habilitado.");zoneName=zone.optString("name");fee=SaleRules.deliveryFee(subtotal,zone.optDouble("fee"),settings.optDouble("deliveryFreeFrom"));
         }
         String id=UUID.randomUUID().toString();

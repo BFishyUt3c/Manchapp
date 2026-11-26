@@ -28,4 +28,16 @@ final class DeliveryDestination {
     static String geo(JSONObject point){if(!validPoint(point))throw new IllegalArgumentException("Ubicación no válida.");return "geo:0,0?q="+point.optDouble("latitude")+","+point.optDouble("longitude");}
     static double distanceKm(JSONObject settings,JSONObject point){if(settings==null||!validPoint(point))return -1;double lat1=settings.optDouble("latitude",Double.NaN),lon1=settings.optDouble("longitude",Double.NaN);if(!Double.isFinite(lat1)||!Double.isFinite(lon1))return -1;double p1=Math.toRadians(lat1),p2=Math.toRadians(point.optDouble("latitude")),dLat=Math.toRadians(point.optDouble("latitude")-lat1),dLon=Math.toRadians(point.optDouble("longitude")-lon1);double a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(p1)*Math.cos(p2)*Math.sin(dLon/2)*Math.sin(dLon/2);return 6371*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
     static String zoneForDistance(JSONObject settings,double km){JSONArray zones=settings==null?null:settings.optJSONArray("zones");double previous=0;for(int i=0;zones!=null&&i<zones.length();i++){JSONObject zone=zones.optJSONObject(i);double max=zone.optDouble("maxKm",2);if(zone.optBoolean("enabled")&&km>=previous&&km<=max)return zone.optString("id");previous=Math.max(previous,max);}return "";}
+
+    static JSONObject verifiedZone(JSONObject settings, JSONObject details) throws Exception {
+        JSONObject point = details.optJSONObject("deliveryLocation");
+        if (!validPoint(point)) throw new Exception("Ubica tu destino para calcular el delivery.");
+        String id = zoneForDistance(settings, distanceKm(settings, point));
+        JSONArray zones = settings.optJSONArray("zones");
+        for (int i = 0; !id.isEmpty() && zones != null && i < zones.length(); i++) {
+            JSONObject zone = zones.optJSONObject(i);
+            if (zone != null && id.equals(zone.optString("id"))) return zone;
+        }
+        throw new Exception("El punto está fuera de la cobertura de delivery.");
+    }
 }
